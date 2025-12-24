@@ -1,0 +1,23 @@
+# Example Configuration File for QRA System
+# You can copy this file and modify the parameters as needed
+
+# Building Configuration
+num_agents: 100
+building_width: 50.0
+building_height: 30.0
+num_exits: 2
+
+# Simulation Configuration
+num_simulations: 10
+
+# Risk Assessment
+aset: 180.0  # Available Safe Egress Time in seconds (3 minutes)
+
+# Agent Behavior Parameters
+mean_speed: 1.2          # Mean walking speed in m/s
+std_speed: 0.3           # Standard deviation of walking speed
+mean_pre_movement: 30.0  # Mean pre-movement time in seconds
+std_pre_movement: 10.0   # Standard deviation of pre-movement time
+
+# Output Configuration
+output_dir: outputs
