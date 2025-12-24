@@ -40,6 +40,7 @@ htmlcov/
 # Reports and outputs
 outputs/
 reports/
+test_outputs/
 *.pdf
 *.html
 results/
