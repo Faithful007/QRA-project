@@ -5,7 +5,7 @@ Performs statistical calculations for quantitative risk assessment
 
 import numpy as np
 from scipy import stats
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 
 
 class StatisticalAnalysis:
@@ -43,7 +43,7 @@ class StatisticalAnalysis:
             'iqr': np.percentile(self.evacuation_times, 75) - np.percentile(self.evacuation_times, 25)
         }
     
-    def fit_distribution(self, distribution: str = 'lognormal') -> Dict[str, any]:
+    def fit_distribution(self, distribution: str = 'lognormal') -> Dict[str, Any]:
         """
         Fit a probability distribution to the evacuation times
         
@@ -145,7 +145,7 @@ class RiskAnalysis:
         """
         self.evacuation_times = evacuation_times
     
-    def calculate_aset_rset_comparison(self, aset: float) -> Dict[str, any]:
+    def calculate_aset_rset_comparison(self, aset: float) -> Dict[str, Any]:
         """
         Calculate ASET/RSET comparison
         
@@ -227,7 +227,7 @@ class RiskAnalysis:
         }
 
 
-def analyze_multiple_simulations(simulation_results: List[Dict]) -> Dict[str, any]:
+def analyze_multiple_simulations(simulation_results: List[Dict]) -> Dict[str, Any]:
     """
     Analyze results from multiple simulations
     

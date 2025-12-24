@@ -4,7 +4,7 @@ Implements agent-based evacuation modeling for quantitative risk assessment
 """
 
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 
 
@@ -144,7 +144,7 @@ class EvacuationSimulation:
         agent.x += (dx / distance) * move_distance
         agent.y += (dy / distance) * move_distance
     
-    def run_simulation(self) -> Dict[str, any]:
+    def run_simulation(self) -> Dict[str, Any]:
         """
         Run the evacuation simulation
         
@@ -187,7 +187,7 @@ class EvacuationSimulation:
         
         return results
     
-    def run_multiple_simulations(self, num_simulations: int) -> List[Dict[str, any]]:
+    def run_multiple_simulations(self, num_simulations: int) -> List[Dict[str, Any]]:
         """
         Run multiple simulations with different random seeds
         

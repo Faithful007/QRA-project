@@ -6,6 +6,7 @@ Creates graphs and plots for QRA analysis
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from scipy import stats
 from typing import List, Dict, Optional, Tuple
 import os
 
@@ -52,7 +53,6 @@ class QRAVisualizer:
                                    edgecolor='black', density=True)
         
         # Add KDE
-        from scipy import stats
         kde = stats.gaussian_kde(evacuation_times)
         x_range = np.linspace(evacuation_times.min(), evacuation_times.max(), 200)
         ax.plot(x_range, kde(x_range), 'r-', linewidth=2, label='KDE')
@@ -203,7 +203,6 @@ class QRAVisualizer:
                edgecolor='black', density=True)
         
         # Add KDE
-        from scipy import stats
         kde = stats.gaussian_kde(safety_margins)
         x_range = np.linspace(safety_margins.min(), safety_margins.max(), 200)
         ax.plot(x_range, kde(x_range), 'g-', linewidth=2, label='KDE')
