@@ -51,47 +51,52 @@ class SimulationSettingsTab(QWidget):
 
     def _create_program_settings_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("Program Settings"))
-        layout = QGridLayout(group)
+        self.program_settings_group = QGroupBox(lm.translate("Program Settings"))
+        layout = QGridLayout(self.program_settings_group)
         
         # Project Name
-        layout.addWidget(QLabel(lm.translate("Project Name:")), 0, 0)
+        self.project_name_label = QLabel(lm.translate("Project Name:"))
+        layout.addWidget(self.project_name_label, 0, 0)
         self.project_name_input = QLineEdit("QRA_Simulation_001")
         self.project_name_input.editingFinished.connect(self.save_data)
         layout.addWidget(self.project_name_input, 0, 1)
         
         # Time Interval
-        layout.addWidget(QLabel(lm.translate("Time Interval:")), 1, 0)
+        self.time_interval_label = QLabel(lm.translate("Time Interval:"))
+        layout.addWidget(self.time_interval_label, 1, 0)
         self.time_interval_input = QLineEdit("5.0")
         layout.addWidget(self.time_interval_input, 1, 1)
         
         # Total Simulation Time
-        layout.addWidget(QLabel(lm.translate("Total Simulation Time:")), 2, 0)
+        self.total_sim_time_label = QLabel(lm.translate("Total Simulation Time:"))
+        layout.addWidget(self.total_sim_time_label, 2, 0)
         self.total_time_input = QLineEdit("3600.0")
         layout.addWidget(self.total_time_input, 2, 1)
         
-        return group
+        return self.program_settings_group
 
     def _create_fire_scenario_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("Fire Scenario"))
-        layout = QGridLayout(group)
+        self.fire_scenario_group = QGroupBox(lm.translate("Fire Scenario"))
+        layout = QGridLayout(self.fire_scenario_group)
         
-        layout.addWidget(QLabel(lm.translate("Tunnel Type:")), 0, 0)
+        self.tunnel_type_label = QLabel(lm.translate("Tunnel Type:"))
+        layout.addWidget(self.tunnel_type_label, 0, 0)
         self.tunnel_type_combo = QComboBox()
         self.tunnel_type_combo.addItems([lm.translate("One-way"), lm.translate("Two-way"), lm.translate("Mixed")])
         layout.addWidget(self.tunnel_type_combo, 0, 1)
         
-        layout.addWidget(QLabel(lm.translate("Scenario Number:")), 1, 0)
+        self.scenario_number_label = QLabel(lm.translate("Scenario Number:"))
+        layout.addWidget(self.scenario_number_label, 1, 0)
         self.scenario_number = QLineEdit("1")
         layout.addWidget(self.scenario_number, 1, 1)
         
-        return group
+        return self.fire_scenario_group
 
     def _create_fire_point_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("Fire Point and Waiting Area"))
-        layout = QVBoxLayout(group)
+        self.fire_point_group = QGroupBox(lm.translate("Fire Point and Waiting Area"))
+        layout = QVBoxLayout(self.fire_point_group)
         
         # Fire Point List Table
         self.fire_point_table = QTableWidget(0, 4)
@@ -116,20 +121,21 @@ class SimulationSettingsTab(QWidget):
         self.add_fire_point_btn.clicked.connect(self._add_fire_point)
         self.remove_fire_point_btn.clicked.connect(self._remove_fire_point)
         
-        return group
+        return self.fire_point_group
 
     def _create_fds_settings_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("FDS File and Save Settings"))
-        layout = QGridLayout(group)
+        self.fds_settings_group = QGroupBox(lm.translate("FDS File and Save Settings"))
+        layout = QGridLayout(self.fds_settings_group)
         
-        layout.addWidget(QLabel(lm.translate("FDS Template File:")), 0, 0)
+        self.fds_template_label = QLabel(lm.translate("FDS Template File:"))
+        layout.addWidget(self.fds_template_label, 0, 0)
         self.fds_template_path = QLineEdit()
         layout.addWidget(self.fds_template_path, 0, 1)
-        browse_btn = QPushButton(lm.translate("Browse"))
-        layout.addWidget(browse_btn, 0, 2)
+        self.browse_btn = QPushButton(lm.translate("Browse"))
+        layout.addWidget(self.browse_btn, 0, 2)
         
-        return group
+        return self.fds_settings_group
 
     def _add_fire_point(self):
         row_count = self.fire_point_table.rowCount()
@@ -285,14 +291,49 @@ class SimulationSettingsTab(QWidget):
         lm = self.language_manager
         
         # Update group box titles
-        for i in range(self.layout().count()):
-            widget = self.layout().itemAt(i).widget()
-            if isinstance(widget, QGroupBox):
-                if "Program Settings" in widget.title():
-                    widget.setTitle(lm.translate("Program Settings"))
-                elif "Fire Scenario" in widget.title():
-                    widget.setTitle(lm.translate("Fire Scenario"))
-                elif "Fire Point and Waiting" in widget.title():
-                    widget.setTitle(lm.translate("Fire Point and Waiting Area"))
-                elif "FDS File" in widget.title():
-                    widget.setTitle(lm.translate("FDS File and Save Settings"))
+        if hasattr(self, 'program_settings_group'):
+            self.program_settings_group.setTitle(lm.translate("Program Settings"))
+        if hasattr(self, 'fire_scenario_group'):
+            self.fire_scenario_group.setTitle(lm.translate("Fire Scenario"))
+        if hasattr(self, 'fire_point_group'):
+            self.fire_point_group.setTitle(lm.translate("Fire Point and Waiting Area"))
+        if hasattr(self, 'fds_settings_group'):
+            self.fds_settings_group.setTitle(lm.translate("FDS File and Save Settings"))
+        
+        # Update labels
+        if hasattr(self, 'project_name_label'):
+            self.project_name_label.setText(lm.translate("Project Name:"))
+        if hasattr(self, 'time_interval_label'):
+            self.time_interval_label.setText(lm.translate("Time Interval:"))
+        if hasattr(self, 'total_sim_time_label'):
+            self.total_sim_time_label.setText(lm.translate("Total Simulation Time:"))
+        if hasattr(self, 'tunnel_type_label'):
+            self.tunnel_type_label.setText(lm.translate("Tunnel Type:"))
+        if hasattr(self, 'scenario_number_label'):
+            self.scenario_number_label.setText(lm.translate("Scenario Number:"))
+        if hasattr(self, 'fds_template_label'):
+            self.fds_template_label.setText(lm.translate("FDS Template File:"))
+        
+        # Update buttons
+        if hasattr(self, 'add_fire_point_btn'):
+            self.add_fire_point_btn.setText(lm.translate("Add Fire Point"))
+        if hasattr(self, 'simulation_btn'):
+            self.simulation_btn.setText(lm.translate("Simulation"))
+        if hasattr(self, 'result_btn'):
+            self.result_btn.setText(lm.translate("Result Analysis"))
+        if hasattr(self, 'print_btn'):
+            self.print_btn.setText(lm.translate("Print"))
+        if hasattr(self, 'save_btn'):
+            self.save_btn.setText(lm.translate("Save"))
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.setText(lm.translate("Browse"))
+        
+        # Update fire type combo box items
+        # Update fire point table headers
+        if hasattr(self, 'fire_point_table'):
+            self.fire_point_table.setHorizontalHeaderLabels([
+                lm.translate("Name"),
+                lm.translate("Location X (m)"),
+                lm.translate("Location Y (m)"),
+                lm.translate("Location Z (m)")
+            ])

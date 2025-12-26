@@ -16,8 +16,6 @@ class TrafficManagementTab(QWidget):
         # Connect to language change signal
         self.language_manager.language_changed.connect(self._on_language_changed)
         
-        # Store references to UI elements that need translation
-        self.ui_elements = {}
         main_layout = QVBoxLayout(self)
         
         # Content widget
@@ -52,32 +50,36 @@ class TrafficManagementTab(QWidget):
 
     def _create_traffic_flow_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("Max Vehicles During Congestion"))
-        layout = QGridLayout(group)
+        self.traffic_flow_group = QGroupBox(lm.translate("Max Vehicles During Congestion"))
+        layout = QGridLayout(self.traffic_flow_group)
         
         # Row 1: Site Max Speed
-        layout.addWidget(QLabel(lm.translate("Max Vehicles During Congestion:")), 0, 0)
+        self.max_vehicles_label = QLabel(lm.translate("Max Vehicles During Congestion:"))
+        layout.addWidget(self.max_vehicles_label, 0, 0)
         self.max_speed_input = QLineEdit("150")
         self.max_speed_input.editingFinished.connect(self.save_data)
         layout.addWidget(self.max_speed_input, 0, 1)
-        layout.addWidget(QLabel("pcpkpl"), 0, 2)
+        layout.addWidget(QLabel(lm.translate("pcpkpl")), 0, 2)
         
         # Row 2: Incident Traffic Volume
-        layout.addWidget(QLabel(lm.translate("Traffic Volume:")), 1, 0)
+        self.traffic_volume_label = QLabel(lm.translate("Traffic Volume:"))
+        layout.addWidget(self.traffic_volume_label, 1, 0)
         self.incident_volume_input = QLineEdit("1600")
         self.incident_volume_input.editingFinished.connect(self.save_data)
         layout.addWidget(self.incident_volume_input, 1, 1)
-        layout.addWidget(QLabel("pcpkpl"), 1, 2)
+        layout.addWidget(QLabel(lm.translate("pcpkpl")), 1, 2)
         
         # Row 3: Fire Point Location
-        layout.addWidget(QLabel(lm.translate("Fire Point Alignment:")), 2, 0)
+        self.fire_point_alignment_label = QLabel(lm.translate("Fire Point Alignment:"))
+        layout.addWidget(self.fire_point_alignment_label, 2, 0)
         self.occupancy_factor_input = QLineEdit("5")
         self.occupancy_factor_input.editingFinished.connect(self.save_data)
         layout.addWidget(self.occupancy_factor_input, 2, 1)
-        layout.addWidget(QLabel("km/h"), 2, 2)
+        layout.addWidget(QLabel(lm.translate("km/h")), 2, 2)
         
         # Radio buttons for vehicle type
-        layout.addWidget(QLabel(lm.translate("Vehicle Type:")), 3, 0)
+        self.vehicle_type_label = QLabel(lm.translate("Vehicle Type:"))
+        layout.addWidget(self.vehicle_type_label, 3, 0)
         self.vehicle_type_group = QButtonGroup()
         self.radio_button1 = QRadioButton(lm.translate("Safety Design"))
         self.radio_button2 = QRadioButton(lm.translate("Emergency"))
@@ -89,12 +91,12 @@ class TrafficManagementTab(QWidget):
         h_layout.addWidget(self.radio_button2)
         layout.addLayout(h_layout, 3, 1, 1, 2)
         
-        return group
+        return self.traffic_flow_group
 
     def _create_speed_distribution_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("Zone-based Speed Distribution and Evacuation"))
-        layout = QVBoxLayout(group)
+        self.speed_dist_group = QGroupBox(lm.translate("Zone-based Speed Distribution and Evacuation"))
+        layout = QVBoxLayout(self.speed_dist_group)
         
         # Speed distribution table
         self.speed_table = QTableWidget(3, 11)
@@ -121,26 +123,31 @@ class TrafficManagementTab(QWidget):
         self.speed_table.cellChanged.connect(self.save_data)
         layout.addWidget(self.speed_table)
         
-        return group
+        return self.speed_dist_group
 
     def _create_evac_speed_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("Vehicle Speed and Evacuation"))
-        layout = QGridLayout(group)
+        self.evac_speed_group = QGroupBox(lm.translate("Vehicle Speed and Evacuation"))
+        layout = QGridLayout(self.evac_speed_group)
         
         # Column headers
-        layout.addWidget(QLabel(lm.translate("Time Zone [hours]")), 0, 0)
-        layout.addWidget(QLabel("Zone5"), 0, 1)
+        self.time_zone_label = QLabel(lm.translate("Time Zone [hours]"))
+        layout.addWidget(self.time_zone_label, 0, 0)
+        self.zone5_label = QLabel(lm.translate("Zone5"))
+        layout.addWidget(self.zone5_label, 0, 1)
         layout.addWidget(QLabel(""), 0, 2)
         
+        self.zone_row_labels = []
         for i in range(5):
-            layout.addWidget(QLabel(f"Zone{i+1}:"), i+1, 0)
+            zone_label = QLabel(f"Zone{i+1}:")
+            self.zone_row_labels.append(zone_label)
+            layout.addWidget(zone_label, i+1, 0)
             line_edit = QLineEdit(f"0.0" if i > 0 else "1.0")
             layout.addWidget(line_edit, i+1, 1)
             if i == 0:
                 self.evac_speed_factor_input = line_edit
         
-        return group
+        return self.evac_speed_group
 
     def get_data(self):
         """Extracts data from the UI elements with safe parsing."""
@@ -189,14 +196,41 @@ class TrafficManagementTab(QWidget):
         lm = self.language_manager
         
         # Update group box titles
-        for i in range(self.layout().count()):
-            widget = self.layout().itemAt(i).widget()
-            if isinstance(widget, QGroupBox):
-                if "Max Vehicles" in widget.title():
-                    widget.setTitle(lm.translate("Max Vehicles During Congestion"))
-                elif "Traffic Volume" in widget.title():
-                    widget.setTitle(lm.translate("Traffic Volume"))
-                elif "Zone-based Speed" in widget.title():
-                    widget.setTitle(lm.translate("Zone-based Speed Distribution and Evacuation"))
-                elif "Vehicle Speed" in widget.title():
-                    widget.setTitle(lm.translate("Vehicle Speed and Evacuation"))
+        if hasattr(self, 'traffic_flow_group'):
+            self.traffic_flow_group.setTitle(lm.translate("Max Vehicles During Congestion"))
+        if hasattr(self, 'speed_dist_group'):
+            self.speed_dist_group.setTitle(lm.translate("Zone-based Speed Distribution and Evacuation"))
+        if hasattr(self, 'evac_speed_group'):
+            self.evac_speed_group.setTitle(lm.translate("Vehicle Speed and Evacuation"))
+        
+        # Update labels
+        if hasattr(self, 'max_vehicles_label'):
+            self.max_vehicles_label.setText(lm.translate("Max Vehicles During Congestion:"))
+        if hasattr(self, 'traffic_volume_label'):
+            self.traffic_volume_label.setText(lm.translate("Traffic Volume:"))
+        if hasattr(self, 'fire_point_alignment_label'):
+            self.fire_point_alignment_label.setText(lm.translate("Fire Point Alignment:"))
+        if hasattr(self, 'vehicle_type_label'):
+            self.vehicle_type_label.setText(lm.translate("Vehicle Type:"))
+        if hasattr(self, 'time_zone_label'):
+            self.time_zone_label.setText(lm.translate("Time Zone [hours]"))
+        if hasattr(self, 'zone5_label'):
+            self.zone5_label.setText(lm.translate("Zone5"))
+        if hasattr(self, 'zone_row_labels'):
+            for i, lbl in enumerate(self.zone_row_labels, start=1):
+                lbl.setText(f"Zone{i}:")
+        
+        # Update button text
+        if hasattr(self, 'save_btn'):
+            self.save_btn.setText(lm.translate("Calculate"))
+        
+        # Update speed table headers and content
+        if hasattr(self, 'speed_table'):
+            headers = [lm.translate("Speed Type"), "10", "20", "30", "40", "50", "60", "70", "80", 
+                       lm.translate("Total"), lm.translate("Status")]
+            self.speed_table.setHorizontalHeaderLabels(headers)
+            
+            # Update row labels
+            self.speed_table.setItem(0, 0, QTableWidgetItem(lm.translate("Max Auto Speed")))
+            self.speed_table.setItem(1, 0, QTableWidgetItem(lm.translate("Min Auto Speed")))
+            self.speed_table.setItem(2, 0, QTableWidgetItem(lm.translate("Medium Vehicle Evac Speed")))

@@ -134,6 +134,21 @@ TRANSLATIONS = {
         "Make Batch File n Run": "Make Batch File n Run",
         "Command": "Command",
         
+        # Units and Labels
+        "pcpkpl": "pcpkpl",
+        "km/h": "km/h",
+        "Zone5": "Zone5",
+        "Speed": "Speed",
+        "Distribution": "Distribution",
+        "Add Point": "Add Point",
+        "Result Analysis": "Result Analysis",
+        "Input Error": "Input Error",
+        "HRR Max:": "HRR Max:",
+        "Steady:": "Steady:",
+        "Decay:": "Decay:",
+        "ASET Criteria:": "ASET Criteria:",
+        "CO Concentration:": "CO Concentration:",
+        
         # Tunnel Settings Tab
         "Tunnel Basic Specifications": "Tunnel Basic Specifications",
         "Name :": "Name:",
@@ -167,6 +182,15 @@ TRANSLATIONS = {
         "TYPE1": "TYPE1",
         "TYPE2": "TYPE2",
         "Chemical properties table": "Chemical properties table",
+        
+        # Unit Symbols
+        "(MW)": "(MW)",
+        "(kW/s²)": "(kW/s²)",
+        "(m)": "(m)",
+        "(GJ)": "(GJ)",
+        "(sec)": "(sec)",
+        "(m/s)": "(m/s)",
+        "(-)" : "(-)",
     },
     
     "ko": {
@@ -332,6 +356,29 @@ TRANSLATIONS = {
         "TYPE1": "TYPE1",
         "TYPE2": "TYPE2",
         "Chemical properties table": "화학적 특성 테이블",
+        
+        # Units and Labels (Korean)
+        "pcpkpl": "pcpkpl",
+        "km/h": "km/h",
+        "Zone5": "Zone5",
+        "Speed": "속도",
+        "Distribution": "분포",
+        "Add Point": "지점 추가",
+        "Result Analysis": "결과 분석",
+        "HRR Max:": "최대 HRR:",
+        "Steady:": "정상상태:",
+        "Decay:": "감쇠:",
+        "ASET Criteria:": "ASET 기준:",
+        "CO Concentration:": "CO 농도:",
+        
+        # Unit Symbols (Korean)
+        "(MW)": "(MW)",
+        "(kW/s²)": "(kW/s²)",
+        "(m)": "(m)",
+        "(GJ)": "(GJ)",
+        "(sec)": "(초)",
+        "(m/s)": "(m/s)",
+        "(-)": "(-)",
     },
     
     "ja": {
@@ -497,6 +544,29 @@ TRANSLATIONS = {
         "FDS SLF Last Time": "FDS SLF最終時刻",
         "Make Batch File n Run": "バッチファイルを作成して実行",
         "Command": "コマンド",
+        
+        # Units and Labels (Japanese)
+        "pcpkpl": "pcpkpl",
+        "km/h": "km/h",
+        "Zone5": "Zone5",
+        "Speed": "速度",
+        "Distribution": "分布",
+        "Add Point": "ポイントを追加",
+        "Result Analysis": "結果分析",
+        "HRR Max:": "最大HRR:",
+        "Steady:": "定定水準:",
+        "Decay:": "減謎:",
+        "ASET Criteria:": "ASET基準:",
+        "CO Concentration:": "CO濃度:",
+        
+        # Unit Symbols (Japanese)
+        "(MW)": "(MW)",
+        "(kW/s²)": "(kW/s²)",
+        "(m)": "(m)",
+        "(GJ)": "(GJ)",
+        "(sec)": "(秒)",
+        "(m/s)": "(m/s)",
+        "(-)": "(-)",
     },
     
     "de": {
@@ -662,6 +732,29 @@ TRANSLATIONS = {
         "FDS SLF Last Time": "FDS SLF Letzte Zeit",
         "Make Batch File n Run": "Batch-Datei erstellen und ausführen",
         "Command": "Befehl",
+        
+        # Units and Labels (German)
+        "pcpkpl": "Pkw/h/Spur",
+        "km/h": "km/h",
+        "Zone5": "Zone5",
+        "Speed": "Geschwindigkeit",
+        "Distribution": "Verteilung",
+        "Add Point": "Punkt hinzufügen",
+        "Result Analysis": "Ergebnisanalyse",
+        "HRR Max:": "Max. HRR:",
+        "Steady:": "Stationär:",
+        "Decay:": "Zerfall:",
+        "ASET Criteria:": "ASET-Kriterium:",
+        "CO Concentration:": "CO-Konzentration:",
+        
+        # Unit Symbols (German)
+        "(MW)": "(MW)",
+        "(kW/s²)": "(kW/s²)",
+        "(m)": "(m)",
+        "(GJ)": "(GJ)",
+        "(sec)": "(Sek)",
+        "(m/s)": "(m/s)",
+        "(-)": "(-)",
     },
     
     "it": {
@@ -827,6 +920,29 @@ TRANSLATIONS = {
         "FDS SLF Last Time": "Ultimo Tempo FDS SLF",
         "Make Batch File n Run": "Crea e Esegui File Batch",
         "Command": "Comando",
+        
+        # Units and Labels (Italian)
+        "pcpkpl": "auto/h/corsia",
+        "km/h": "km/h",
+        "Zone5": "Zone5",
+        "Speed": "Velocità",
+        "Distribution": "Distribuzione",
+        "Add Point": "Aggiungi Punto",
+        "Result Analysis": "Analisi dei Risultati",
+        "HRR Max:": "HRR Massimo:",
+        "Steady:": "Costante:",
+        "Decay:": "Decadimento:",
+        "ASET Criteria:": "Criterio ASET:",
+        "CO Concentration:": "Concentrazione CO:",
+        
+        # Unit Symbols (Italian)
+        "(MW)": "(MW)",
+        "(kW/s²)": "(kW/s²)",
+        "(m)": "(m)",
+        "(GJ)": "(GJ)",
+        "(sec)": "(sec)",
+        "(m/s)": "(m/s)",
+        "(-)": "(-)",
     },
     
     "fr": {
@@ -992,6 +1108,29 @@ TRANSLATIONS = {
         "FDS SLF Last Time": "Dernier Temps FDS SLF",
         "Make Batch File n Run": "Créer et Exécuter le Fichier Batch",
         "Command": "Commande",
+        
+        # Units and Labels (French)
+        "pcpkpl": "v/h/voie",
+        "km/h": "km/h",
+        "Zone5": "Zone5",
+        "Speed": "Vitesse",
+        "Distribution": "Distribution",
+        "Add Point": "Ajouter un Point",
+        "Result Analysis": "Analyse des Résultats",
+        "HRR Max:": "HRR Maximum:",
+        "Steady:": "Stable:",
+        "Decay:": "Décroissance:",
+        "ASET Criteria:": "Critère ASET:",
+        "CO Concentration:": "Concentration CO:",
+        
+        # Unit Symbols (French)
+        "(MW)": "(MW)",
+        "(kW/s²)": "(kW/s²)",
+        "(m)": "(m)",
+        "(GJ)": "(GJ)",
+        "(sec)": "(sec)",
+        "(m/s)": "(m/s)",
+        "(-)": "(-)",
     },
     
     "nl": {
@@ -1157,6 +1296,29 @@ TRANSLATIONS = {
         "FDS SLF Last Time": "FDS SLF Laatste Tijd",
         "Make Batch File n Run": "Batchbestand Maken en Uitvoeren",
         "Command": "Commando",
+        
+        # Units and Labels (Dutch)
+        "pcpkpl": "auto/h/rijstrook",
+        "km/h": "km/h",
+        "Zone5": "Zone5",
+        "Speed": "Snelheid",
+        "Distribution": "Verdeling",
+        "Add Point": "Punt Toevoegen",
+        "Result Analysis": "Resultaatanalyse",
+        "HRR Max:": "HRR Max:",
+        "Steady:": "Constant:",
+        "Decay:": "Afname:",
+        "ASET Criteria:": "ASET-criterium:",
+        "CO Concentration:": "CO-concentratie:",
+        
+        # Unit Symbols (Dutch)
+        "(MW)": "(MW)",
+        "(kW/s²)": "(kW/s²)",
+        "(m)": "(m)",
+        "(GJ)": "(GJ)",
+        "(sec)": "(sec)",
+        "(m/s)": "(m/s)",
+        "(-)": "(-)",
     },
 }
 

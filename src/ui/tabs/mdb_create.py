@@ -59,14 +59,15 @@ class MDBDatabaseCreationTab(QWidget):
 
     def _create_db_set_group(self):
         lm = self.language_manager
-        group = QGroupBox(lm.translate("DB Set"))
-        layout = QGridLayout(group)
+        self.db_set_group = QGroupBox(lm.translate("DB Set"))
+        layout = QGridLayout(self.db_set_group)
         
         # Type selection
-        layout.addWidget(QLabel(lm.translate("Source Selection")), 0, 0)
+        self.source_selection_label = QLabel(lm.translate("Source Selection"))
+        layout.addWidget(self.source_selection_label, 0, 0)
         self.type_group = QButtonGroup()
-        self.type1 = QRadioButton("TYPE1")
-        self.type2 = QRadioButton("TYPE2")
+        self.type1 = QRadioButton(lm.translate("TYPE1"))
+        self.type2 = QRadioButton(lm.translate("TYPE2"))
         self.type_group.addButton(self.type1, 1)
         self.type_group.addButton(self.type2, 2)
         self.type2.setChecked(True)
@@ -76,10 +77,10 @@ class MDBDatabaseCreationTab(QWidget):
         layout.addLayout(h_layout, 0, 1)
         
         # Chemical properties table
-        self.chem_table = QTableWidget(2, 6)
+        self.chem_table = QTableWidget(2, 8)
         headers = [lm.translate("CFDIDX"), lm.translate("VALUE"), lm.translate("Soot"), 
-                   lm.translate("CO2"), lm.translate("CO"), lm.translate("Temp"), 
-                   lm.translate("Radiation"), lm.translate("Oxygen")]
+               lm.translate("CO2"), lm.translate("CO"), lm.translate("Temp"), 
+               lm.translate("Radiation"), lm.translate("Oxygen")]
         self.chem_table.setHorizontalHeaderLabels(headers)
         
         # Row 1: CFDIDX
@@ -101,57 +102,66 @@ class MDBDatabaseCreationTab(QWidget):
         self.chem_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.chem_table, 1, 0, 1, 2)
         
-        return group
+        return self.db_set_group
 
     def _create_mdb_file_section(self):
-        group = QGroupBox("MDB File Selection")
-        layout = QGridLayout(group)
+        lm = self.language_manager
+        self.mdb_file_group = QGroupBox(lm.translate("MDB File Selection"))
+        layout = QGridLayout(self.mdb_file_group)
         
         # Drive selection
-        layout.addWidget(QLabel("C:"), 0, 0)
+        self.drive_label = QLabel("C:")
+        layout.addWidget(self.drive_label, 0, 0)
         self.drive_combo = QComboBox()
         self.drive_combo.addItems(["C:", "D:", "E:"])
         layout.addWidget(self.drive_combo, 0, 1)
         
         # File tree/list
-        layout.addWidget(QLabel("Index File Name"), 0, 2)
-        layout.addWidget(QLabel("MDB File"), 0, 3)
-        layout.addWidget(QLabel("Status"), 0, 4)
+        self.index_file_label = QLabel(lm.translate("Index File Name"))
+        layout.addWidget(self.index_file_label, 0, 2)
+        self.mdb_file_label = QLabel(lm.translate("MDB File"))
+        layout.addWidget(self.mdb_file_label, 0, 3)
+        self.status_label = QLabel(lm.translate("Status"))
+        layout.addWidget(self.status_label, 0, 4)
         
         # Folder tree (placeholder)
         self.folder_tree = QTableWidget(5, 2)
         self.folder_tree.setColumnCount(1)
-        self.folder_tree.setHorizontalHeaderLabels(["Files"])
+        self.folder_tree.setHorizontalHeaderLabels([lm.translate("Files")])
         self.folder_tree.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.folder_tree, 1, 0, 4, 2)
         
         # File list table
-        self.file_list = QTableWidget(0, 3)
-        self.file_list.setHorizontalHeaderLabels(["#", "Index File Name", "MDB File", "Status"])
+        self.file_list = QTableWidget(0, 4)
+        self.file_list.setHorizontalHeaderLabels(["#", lm.translate("Index File Name"), lm.translate("MDB File"), lm.translate("Status")])
         self.file_list.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.file_list, 1, 2, 4, 3)
         
-        return group
+        return self.mdb_file_group
 
     def _create_fds_settings_group(self):
-        group = QGroupBox("FDS File Settings")  # FDS File Settings
-        layout = QGridLayout(group)
+        lm = self.language_manager
+        self.fds_settings_group = QGroupBox(lm.translate("FDS File Settings"))
+        layout = QGridLayout(self.fds_settings_group)
         
-        layout.addWidget(QLabel("FDS SLF Time Interval"), 0, 0)
+        self.fds_time_interval_label = QLabel(lm.translate("FDS SLF Time Interval"))
+        layout.addWidget(self.fds_time_interval_label, 0, 0)
         self.fds_time_interval = QLineEdit()
         layout.addWidget(self.fds_time_interval, 0, 1)
         
-        layout.addWidget(QLabel("FDS ID / Tunnel Axis Dir."), 1, 0)
+        self.fds_id_label = QLabel(lm.translate("FDS ID / Tunnel Axis Dir."))
+        layout.addWidget(self.fds_id_label, 1, 0)
         self.fds_id = QLineEdit()
         self.tunnel_axis = QLineEdit()
         layout.addWidget(self.fds_id, 1, 1)
         layout.addWidget(self.tunnel_axis, 1, 2)
         
-        layout.addWidget(QLabel("FDS SLF Last Time"), 2, 0)
+        self.fds_last_time_label = QLabel(lm.translate("FDS SLF Last Time"))
+        layout.addWidget(self.fds_last_time_label, 2, 0)
         self.fds_last_time = QLineEdit()
         layout.addWidget(self.fds_last_time, 2, 1)
         
-        return group
+        return self.fds_settings_group
 
     def _browse_file(self, line_edit):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select File")
@@ -169,12 +179,52 @@ class MDBDatabaseCreationTab(QWidget):
         lm = self.language_manager
         
         # Update group box titles
-        for i in range(self.layout().count()):
-            widget = self.layout().itemAt(i).widget()
-            if isinstance(widget, QGroupBox):
-                if "DB Set" in widget.title():
-                    widget.setTitle(lm.translate("DB Set"))
-                elif "MDB File" in widget.title():
-                    widget.setTitle(lm.translate("MDB File Selection"))
-                elif "FDS File" in widget.title():
-                    widget.setTitle(lm.translate("FDS File Settings"))
+        if hasattr(self, 'db_set_group'):
+            self.db_set_group.setTitle(lm.translate("DB Set"))
+        if hasattr(self, 'mdb_file_group'):
+            self.mdb_file_group.setTitle(lm.translate("MDB File Selection"))
+        if hasattr(self, 'fds_settings_group'):
+            self.fds_settings_group.setTitle(lm.translate("FDS File Settings"))
+        
+        # Update labels
+        if hasattr(self, 'source_selection_label'):
+            self.source_selection_label.setText(lm.translate("Source Selection"))
+        if hasattr(self, 'index_file_label'):
+            self.index_file_label.setText(lm.translate("Index File Name"))
+        if hasattr(self, 'mdb_file_label'):
+            self.mdb_file_label.setText(lm.translate("MDB File"))
+        if hasattr(self, 'status_label'):
+            self.status_label.setText(lm.translate("Status"))
+        if hasattr(self, 'fds_time_interval_label'):
+            self.fds_time_interval_label.setText(lm.translate("FDS SLF Time Interval"))
+        if hasattr(self, 'fds_id_label'):
+            self.fds_id_label.setText(lm.translate("FDS ID / Tunnel Axis Dir."))
+        if hasattr(self, 'fds_last_time_label'):
+            self.fds_last_time_label.setText(lm.translate("FDS SLF Last Time"))
+        
+        # Update buttons
+        if hasattr(self, 'db_create_btn'):
+            self.db_create_btn.setText(lm.translate("DB Create"))
+        if hasattr(self, 'db_import_btn'):
+            self.db_import_btn.setText(lm.translate("DB Import"))
+        if hasattr(self, 'make_batch_btn'):
+            self.make_batch_btn.setText(lm.translate("Make Batch File n Run"))
+        if hasattr(self, 'command_btn'):
+            self.command_btn.setText(lm.translate("Command"))
+        
+        # Update combo box items
+        if hasattr(self, 'type1'):
+            self.type1.setText(lm.translate("TYPE1"))
+        if hasattr(self, 'type2'):
+            self.type2.setText(lm.translate("TYPE2"))
+        
+        # Update table headers
+        if hasattr(self, 'chem_table'):
+            self.chem_table.setHorizontalHeaderItem(0, QTableWidgetItem(lm.translate("CFDIDX")))
+            self.chem_table.setHorizontalHeaderItem(1, QTableWidgetItem(lm.translate("VALUE")))
+            self.chem_table.setHorizontalHeaderItem(2, QTableWidgetItem(lm.translate("Soot")))
+            self.chem_table.setHorizontalHeaderItem(3, QTableWidgetItem(lm.translate("CO2")))
+            self.chem_table.setHorizontalHeaderItem(4, QTableWidgetItem(lm.translate("CO")))
+            self.chem_table.setHorizontalHeaderItem(5, QTableWidgetItem(lm.translate("Temp")))
+            self.chem_table.setHorizontalHeaderItem(6, QTableWidgetItem(lm.translate("Radiation")))
+            self.chem_table.setHorizontalHeaderItem(7, QTableWidgetItem(lm.translate("Oxygen")))
