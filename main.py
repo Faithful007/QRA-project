@@ -21,11 +21,8 @@ def main():
     # Create tables
     Base.metadata.create_all(engine)
 
-    # Initialize the main application window
+    # Initialize the main application windows (main tab window stays hidden initially)
     main_window = QRACalculatorApp()
-    
-    # Explicitly show the main window with the tabs
-    main_window.show()
 
     # Start the PyQt event loop
     sys.exit(app.exec())

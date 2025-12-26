@@ -1,70 +1,122 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
-    QGroupBox, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QMessageBox
+    QGroupBox, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QMessageBox,
+    QPushButton, QComboBox, QRadioButton, QButtonGroup, QScrollArea
 )
 from PyQt6.QtCore import Qt
 from src.database.data_manager import DataManager
+from src.language_manager import get_language_manager
 
 class TrafficManagementTab(QWidget):
     def __init__(self, data_manager: DataManager):
         super().__init__()
         self.data_manager = data_manager
-        self.layout = QVBoxLayout(self)
+        self.language_manager = get_language_manager()
         
-        # 1. Traffic Flow Configuration Group
-        self.layout.addWidget(self._create_traffic_flow_group())
+        # Connect to language change signal
+        self.language_manager.language_changed.connect(self._on_language_changed)
         
-        # 2. Speed Distribution Group
-        self.layout.addWidget(self._create_speed_distribution_group())
+        # Store references to UI elements that need translation
+        self.ui_elements = {}
+        main_layout = QVBoxLayout(self)
         
-        # 3. Evacuation Zone Speed Group
-        self.layout.addWidget(self._create_evac_speed_group())
+        # Content widget
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
         
-        self.layout.addStretch(1)
+        # 1. Traffic Flow Configuration Group - Left side
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(self._create_traffic_flow_group())
+        left_layout.addStretch(1)
         
+        # Top horizontal layout for main settings and speed table
+        top_layout = QHBoxLayout()
+        top_layout.addLayout(left_layout, 1)
+        top_layout.addWidget(self._create_speed_distribution_group(), 2)
+        
+        content_layout.addLayout(top_layout)
+        
+        # 2. Evacuation Zone Speed Group - Full width
+        content_layout.addWidget(self._create_evac_speed_group())
+        
+        # Bottom buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        self.save_btn = QPushButton("Calculate")
+        self.save_btn.clicked.connect(self.save_data)
+        button_layout.addWidget(self.save_btn)
+        content_layout.addLayout(button_layout)
+        
+        main_layout.addWidget(content_widget)
         self.load_data()
 
     def _create_traffic_flow_group(self):
-        group = QGroupBox("Traffic Flow Configuration")
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Max Vehicles During Congestion"))
         layout = QGridLayout(group)
         
         # Row 1: Site Max Speed
-        layout.addWidget(QLabel("Site Max Speed (km/h):"), 0, 0)
-        self.max_speed_input = QLineEdit("80.0")
+        layout.addWidget(QLabel(lm.translate("Max Vehicles During Congestion:")), 0, 0)
+        self.max_speed_input = QLineEdit("150")
         self.max_speed_input.editingFinished.connect(self.save_data)
         layout.addWidget(self.max_speed_input, 0, 1)
+        layout.addWidget(QLabel("pcpkpl"), 0, 2)
         
         # Row 2: Incident Traffic Volume
-        layout.addWidget(QLabel("Incident Traffic Volume (veh/h):"), 1, 0)
-        self.incident_volume_input = QLineEdit("0.0")
+        layout.addWidget(QLabel(lm.translate("Traffic Volume:")), 1, 0)
+        self.incident_volume_input = QLineEdit("1600")
         self.incident_volume_input.editingFinished.connect(self.save_data)
         layout.addWidget(self.incident_volume_input, 1, 1)
+        layout.addWidget(QLabel("pcpkpl"), 1, 2)
         
-        # Row 3: Occupancy Factor (Simplified)
-        layout.addWidget(QLabel("Occupancy Factor:"), 2, 0)
-        self.occupancy_factor_input = QLineEdit("1.0")
+        # Row 3: Fire Point Location
+        layout.addWidget(QLabel(lm.translate("Fire Point Alignment:")), 2, 0)
+        self.occupancy_factor_input = QLineEdit("5")
         self.occupancy_factor_input.editingFinished.connect(self.save_data)
         layout.addWidget(self.occupancy_factor_input, 2, 1)
+        layout.addWidget(QLabel("km/h"), 2, 2)
+        
+        # Radio buttons for vehicle type
+        layout.addWidget(QLabel(lm.translate("Vehicle Type:")), 3, 0)
+        self.vehicle_type_group = QButtonGroup()
+        self.radio_button1 = QRadioButton(lm.translate("Safety Design"))
+        self.radio_button2 = QRadioButton(lm.translate("Emergency"))
+        self.vehicle_type_group.addButton(self.radio_button1, 1)
+        self.vehicle_type_group.addButton(self.radio_button2, 2)
+        self.radio_button1.setChecked(True)
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(self.radio_button1)
+        h_layout.addWidget(self.radio_button2)
+        layout.addLayout(h_layout, 3, 1, 1, 2)
         
         return group
 
     def _create_speed_distribution_group(self):
-        group = QGroupBox("Zone-based Traffic and Speed Distribution")
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Zone-based Speed Distribution and Evacuation"))
         layout = QVBoxLayout(group)
         
-        # Simplified table for speed distribution
-        self.speed_table = QTableWidget(5, 3)
-        self.speed_table.setHorizontalHeaderLabels(["Zone", "Traffic Volume (%)", "Speed (km/h)"])
+        # Speed distribution table
+        self.speed_table = QTableWidget(3, 11)
+        headers = [lm.translate("Speed Type"), "10", "20", "30", "40", "50", "60", "70", "80", 
+                   lm.translate("Total"), lm.translate("Status")]
+        self.speed_table.setHorizontalHeaderLabels(headers)
         
-        # Populate initial data (placeholder zones)
-        for i in range(5):
-            self.speed_table.setItem(i, 0, QTableWidgetItem(f"Zone {i+1}"))
-            self.speed_table.setItem(i, 1, QTableWidgetItem("20.0" if i < 4 else "0.0"))
-            self.speed_table.setItem(i, 2, QTableWidgetItem("80.0"))
-            
-            # Make Zone column read-only
-            self.speed_table.item(i, 0).setFlags(self.speed_table.item(i, 0).flags() & ~Qt.ItemFlag.ItemIsEditable)
-
+        # First row: Max auto speed
+        self.speed_table.setItem(0, 0, QTableWidgetItem(lm.translate("Max Auto Speed")))
+        for i in range(1, 9):
+            self.speed_table.setItem(0, i, QTableWidgetItem("0"))
+        
+        # Second row: Min auto speed
+        self.speed_table.setItem(1, 0, QTableWidgetItem(lm.translate("Min Auto Speed")))
+        for i in range(1, 9):
+            self.speed_table.setItem(1, i, QTableWidgetItem("0"))
+        
+        # Third row: Medium vehicle evacuation speed
+        self.speed_table.setItem(2, 0, QTableWidgetItem(lm.translate("Medium Vehicle Evac Speed")))
+        for i in range(1, 9):
+            self.speed_table.setItem(2, i, QTableWidgetItem("0"))
+        
         self.speed_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.speed_table.cellChanged.connect(self.save_data)
         layout.addWidget(self.speed_table)
@@ -72,14 +124,21 @@ class TrafficManagementTab(QWidget):
         return group
 
     def _create_evac_speed_group(self):
-        group = QGroupBox("Evacuation Zone Speed Distribution")
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Vehicle Speed and Evacuation"))
         layout = QGridLayout(group)
         
-        # Simplified input for Evacuation Zone Speed
-        layout.addWidget(QLabel("Evac Zone Speed Factor:"), 0, 0)
-        self.evac_speed_factor_input = QLineEdit("1.0")
-        self.evac_speed_factor_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.evac_speed_factor_input, 0, 1)
+        # Column headers
+        layout.addWidget(QLabel(lm.translate("Time Zone [hours]")), 0, 0)
+        layout.addWidget(QLabel("Zone5"), 0, 1)
+        layout.addWidget(QLabel(""), 0, 2)
+        
+        for i in range(5):
+            layout.addWidget(QLabel(f"Zone{i+1}:"), i+1, 0)
+            line_edit = QLineEdit(f"0.0" if i > 0 else "1.0")
+            layout.addWidget(line_edit, i+1, 1)
+            if i == 0:
+                self.evac_speed_factor_input = line_edit
         
         return group
 
@@ -124,4 +183,20 @@ class TrafficManagementTab(QWidget):
         # data = self.get_data()
         # if data:
         #     self.data_manager.save_traffic_data(data)
-        pass
+        pass    
+    def _on_language_changed(self, language_code: str):
+        """Handle language change event."""
+        lm = self.language_manager
+        
+        # Update group box titles
+        for i in range(self.layout().count()):
+            widget = self.layout().itemAt(i).widget()
+            if isinstance(widget, QGroupBox):
+                if "Max Vehicles" in widget.title():
+                    widget.setTitle(lm.translate("Max Vehicles During Congestion"))
+                elif "Traffic Volume" in widget.title():
+                    widget.setTitle(lm.translate("Traffic Volume"))
+                elif "Zone-based Speed" in widget.title():
+                    widget.setTitle(lm.translate("Zone-based Speed Distribution and Evacuation"))
+                elif "Vehicle Speed" in widget.title():
+                    widget.setTitle(lm.translate("Vehicle Speed and Evacuation"))

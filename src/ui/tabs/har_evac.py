@@ -1,190 +1,261 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
-    QGroupBox, QComboBox, QCheckBox, QMessageBox
+    QGroupBox, QComboBox, QCheckBox, QMessageBox, QPushButton, QRadioButton, QButtonGroup,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt6.QtCore import Qt
 from src.database.data_manager import DataManager
+from src.language_manager import get_language_manager
 
 class HAREVACAnalysisTab(QWidget):
     def __init__(self, data_manager: DataManager):
         super().__init__()
         self.data_manager = data_manager
-        self.layout = QVBoxLayout(self)
+        self.language_manager = get_language_manager()
         
-        # 1. Hazard Definition Group
-        self.layout.addWidget(self._create_hazard_group())
+        # Connect to language change signal
+        self.language_manager.language_changed.connect(self._on_language_changed)
         
-        # 2. Fire Characteristics Group
-        self.layout.addWidget(self._create_fire_group())
+        # Main layout
+        main_layout = QVBoxLayout(self)
         
-        # 3. Evacuation Characteristics Group
-        self.layout.addWidget(self._create_evac_char_group())
+        # Top section: Hazard definition
+        main_layout.addWidget(self._create_hazard_group())
         
-        # 4. Evacuation Timing and Speed Group
-        self.layout.addWidget(self._create_evac_timing_group())
+        # Middle section: Fire characteristics and evacuation settings
+        middle_layout = QHBoxLayout()
+        middle_layout.addWidget(self._create_fire_group(), 1)
+        middle_layout.addWidget(self._create_evac_char_group(), 1)
+        main_layout.addLayout(middle_layout)
         
-        self.layout.addStretch(1)
+        # Bottom section: Evacuation timing settings with graph
+        main_layout.addWidget(self._create_evac_timing_group())
         
+        # Control buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        self.export_btn = QPushButton("Export Data")
+        self.export_btn.clicked.connect(self.save_data)
+        button_layout.addWidget(self.export_btn)
+        main_layout.addLayout(button_layout)
+        
+        main_layout.addStretch(1)
         self.load_data()
 
     def _create_hazard_group(self):
-        group = QGroupBox("Hazard Definition")
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Tunnel Environment Handling"))
         layout = QGridLayout(group)
         
-        layout.addWidget(QLabel("Calculation Method:"), 0, 0)
-        self.calc_method_combo = QComboBox()
-        self.calc_method_combo.addItems(["FED (Fractional Effective Dose)", "Tenability Limits", "Custom"])
-        self.calc_method_combo.currentTextChanged.connect(self.save_data)
-        layout.addWidget(self.calc_method_combo, 0, 1)
+        # Radio buttons for calculation method
+        layout.addWidget(QLabel(lm.translate("Handling Method:")), 0, 0)
+        self.calc_method_group = QButtonGroup()
+        self.by_equation = QRadioButton(lm.translate("by Equation"))
+        self.by_mdb = QRadioButton(lm.translate("by MDB"))
+        self.calc_method_group.addButton(self.by_equation, 1)
+        self.calc_method_group.addButton(self.by_mdb, 2)
+        self.by_equation.setChecked(True)
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(self.by_equation)
+        h_layout.addWidget(self.by_mdb)
+        layout.addLayout(h_layout, 0, 1, 1, 2)
+        
+        # Fire characteristics inputs
+        layout.addWidget(QLabel(lm.translate("Design Fire Intensity:")), 1, 0)
+        self.hrr_input = QLineEdit("20")
+        h_layout1 = QHBoxLayout()
+        h_layout1.addWidget(self.hrr_input)
+        h_layout1.addWidget(QLabel("(MW)"))
+        layout.addLayout(h_layout1, 1, 1)
+        
+        layout.addWidget(QLabel(lm.translate("Growth Rate:")), 1, 2)
+        self.growth_rate_input = QLineEdit("0.15")
+        h_layout2 = QHBoxLayout()
+        h_layout2.addWidget(self.growth_rate_input)
+        h_layout2.addWidget(QLabel("(kW/s²)"))
+        layout.addLayout(h_layout2, 1, 3)
+        
+        layout.addWidget(QLabel(lm.translate("Target Layer:")), 1, 4)
+        self.target_layer_input = QLineEdit("0.001")
+        h_layout3 = QHBoxLayout()
+        h_layout3.addWidget(self.target_layer_input)
+        h_layout3.addWidget(QLabel("(m)"))
+        layout.addLayout(h_layout3, 1, 5)
+        
+        # Second row
+        layout.addWidget(QLabel(lm.translate("Total Heat Energy:")), 2, 0)
+        self.complete_layer_input = QLineEdit("0.001")
+        h_layout4 = QHBoxLayout()
+        h_layout4.addWidget(self.complete_layer_input)
+        h_layout4.addWidget(QLabel("(GJ)"))
+        layout.addLayout(h_layout4, 2, 1)
         
         return group
 
     def _create_fire_group(self):
-        group = QGroupBox("Fire Characteristics")
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Fire Growth Curve"))
         layout = QGridLayout(group)
         
-        # Row 1: Heat Release Rate
-        layout.addWidget(QLabel("Heat Release Rate (MW):"), 0, 0)
-        self.hrr_input = QLineEdit("10.0")
-        self.hrr_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.hrr_input, 0, 1)
+        # Heat Release Rate
+        layout.addWidget(QLabel(lm.translate("Design Fire Intensity:")), 0, 0)
+        self.hrr_display = QLineEdit("20")
+        self.hrr_display.setReadOnly(True)
+        h_layout1 = QHBoxLayout()
+        h_layout1.addWidget(self.hrr_display)
+        h_layout1.addWidget(QLabel("(MW)"))
+        layout.addLayout(h_layout1, 0, 1)
         
-        # Row 2: Fire Growth Rate
-        layout.addWidget(QLabel("Fire Growth Rate:"), 1, 0)
-        self.growth_rate_combo = QComboBox()
-        self.growth_rate_combo.addItems(["Slow", "Medium", "Fast", "Ultra-Fast"])
-        self.growth_rate_combo.setCurrentText("Medium")
-        self.growth_rate_combo.currentTextChanged.connect(self.save_data)
-        layout.addWidget(self.growth_rate_combo, 1, 1)
+        # Growth Rate
+        layout.addWidget(QLabel(lm.translate("Growth Rate:")), 1, 0)
+        self.growth_rate_display = QLineEdit("0.15")
+        h_layout2 = QHBoxLayout()
+        h_layout2.addWidget(self.growth_rate_display)
+        h_layout2.addWidget(QLabel("(kW/s²)"))
+        layout.addLayout(h_layout2, 1, 1)
         
-        # Row 3: Smoke Density
-        layout.addWidget(QLabel("Smoke Density (m^-1):"), 2, 0)
-        self.smoke_density_input = QLineEdit("0.1")
-        self.smoke_density_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.smoke_density_input, 2, 1)
+        # Add a simple chart area (placeholder)
+        layout.addWidget(QLabel(""), 2, 0, 3, 3)  # Space for future chart
         
         return group
 
     def _create_evac_char_group(self):
-        group = QGroupBox("Evacuation Characteristics (ASET/RSET Criteria)")
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Evacuation Safety"))
         layout = QGridLayout(group)
         
-        # Row 1: Visibility Limit
-        layout.addWidget(QLabel("Visibility Limit (m):"), 0, 0)
-        self.visibility_input = QLineEdit("10.0")
-        self.visibility_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.visibility_input, 0, 1)
+        # Visibility Limit
+        layout.addWidget(QLabel(lm.translate("Design Fire Intensity:")), 0, 0)
+        self.visibility_input = QLineEdit("20")
+        h_layout1 = QHBoxLayout()
+        h_layout1.addWidget(self.visibility_input)
+        h_layout1.addWidget(QLabel("(MW)"))
+        layout.addLayout(h_layout1, 0, 1)
         
-        # Row 2: Temperature Limit
-        layout.addWidget(QLabel("Temperature Limit (°C):"), 1, 0)
-        self.temp_input = QLineEdit("60.0")
-        self.temp_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.temp_input, 1, 1)
+        # Temperature Limit
+        layout.addWidget(QLabel(lm.translate("Growth Rate:")), 1, 0)
+        self.temp_input = QLineEdit("0.15")
+        h_layout2 = QHBoxLayout()
+        h_layout2.addWidget(self.temp_input)
+        h_layout2.addWidget(QLabel("(kW/s²)"))
+        layout.addLayout(h_layout2, 1, 1)
         
-        # Row 3: CO Limit
-        layout.addWidget(QLabel("CO Limit (ppm):"), 2, 0)
-        self.co_input = QLineEdit("1000.0")
-        self.co_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.co_input, 2, 1)
+        # CO Limit
+        layout.addWidget(QLabel(lm.translate("Target Layer:")), 2, 0)
+        self.co_input = QLineEdit("0.001")
+        h_layout3 = QHBoxLayout()
+        h_layout3.addWidget(self.co_input)
+        h_layout3.addWidget(QLabel("(m)"))
+        layout.addLayout(h_layout3, 2, 1)
         
         return group
 
     def _create_evac_timing_group(self):
-        group = QGroupBox("Evacuation Timing and Speed")
+        group = QGroupBox("Evacuation Timing and Speed")  # Evacuation timing and speed
         layout = QGridLayout(group)
         
-        # Row 1: Reaction Time
-        layout.addWidget(QLabel("Reaction Time (s):"), 0, 0)
-        self.reaction_time_input = QLineEdit("60.0")
-        self.reaction_time_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.reaction_time_input, 0, 1)
+        # Reaction Time
+        layout.addWidget(QLabel("Evacuation Time:"), 0, 0)
+        self.reaction_time_input = QLineEdit("180")
+        h_layout1 = QHBoxLayout()
+        h_layout1.addWidget(self.reaction_time_input)
+        h_layout1.addWidget(QLabel("(sec)"))
+        layout.addLayout(h_layout1, 0, 1)
         
-        # Row 2: Hesitation Time
-        layout.addWidget(QLabel("Hesitation Time (s):"), 1, 0)
-        self.hesitation_time_input = QLineEdit("120.0")
-        self.hesitation_time_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.hesitation_time_input, 1, 1)
+        layout.addWidget(QLabel("Waiting Time:"), 0, 2)
+        self.hesitation_time_input = QLineEdit("60")
+        h_layout2 = QHBoxLayout()
+        h_layout2.addWidget(self.hesitation_time_input)
+        h_layout2.addWidget(QLabel("(sec)"))
+        layout.addLayout(h_layout2, 0, 3)
         
-        # New: Ratio of Old People (Human Factor)
-        layout.addWidget(QLabel("Ratio of Old People (%):"), 2, 0)
-        self.old_people_ratio_input = QLineEdit("10.0")
-        self.old_people_ratio_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.old_people_ratio_input, 2, 1)
+        layout.addWidget(QLabel("Contact Time:"), 0, 4)
+        self.contact_time_input = QLineEdit("180")
+        h_layout3 = QHBoxLayout()
+        h_layout3.addWidget(self.contact_time_input)
+        h_layout3.addWidget(QLabel("(sec)"))
+        layout.addLayout(h_layout3, 0, 5)
         
-        # Row 4: Evacuation Speed (Walking) - Replaced with ComboBox for options
-        layout.addWidget(QLabel("Walking Speed Option:"), 3, 0)
-        self.walking_speed_combo = QComboBox()
-        self.walking_speed_combo.addItems(["Standard (1.2 m/s)", "Reduced (0.8 m/s)", "Congested (0.5 m/s)", "Custom"])
-        self.walking_speed_combo.currentTextChanged.connect(self.save_data)
-        layout.addWidget(self.walking_speed_combo, 3, 1)
+        # Evacuation speeds
+        layout.addWidget(QLabel("Minimum Evacuation Speed:"), 1, 0)
+        self.min_evac_speed = QLineEdit("0.45")
+        h_layout4 = QHBoxLayout()
+        h_layout4.addWidget(self.min_evac_speed)
+        h_layout4.addWidget(QLabel("(m/s)"))
+        layout.addLayout(h_layout4, 1, 1)
         
-        # Row 5: Evacuation Speed (Running) - Kept for custom speed input
-        layout.addWidget(QLabel("Evac Speed - Running (m/s):"), 4, 0)
-        self.run_speed_input = QLineEdit("2.0")
-        self.run_speed_input.editingFinished.connect(self.save_data)
-        layout.addWidget(self.run_speed_input, 4, 1)
+        layout.addWidget(QLabel("Elderly Evacuation Speed:"), 1, 2)
+        self.elderly_evac_speed = QLineEdit("0.6")
+        h_layout5 = QHBoxLayout()
+        h_layout5.addWidget(self.elderly_evac_speed)
+        h_layout5.addWidget(QLabel("(m/s)"))
+        layout.addLayout(h_layout5, 1, 3)
         
-        # Row 6: Early Start Condition
-        self.early_start_check = QCheckBox("Early Start (Evac before pre-set time)")
-        self.early_start_check.stateChanged.connect(self.save_data)
-        layout.addWidget(self.early_start_check, 5, 0, 1, 2)
+        layout.addWidget(QLabel("Elderly Factor (IDahl):"), 1, 4)
+        self.elderly_factor = QLineEdit("0.4")
+        h_layout6 = QHBoxLayout()
+        h_layout6.addWidget(self.elderly_factor)
+        h_layout6.addWidget(QLabel("(-)"))
+        layout.addLayout(h_layout6, 1, 5)
+        
+        # Checkboxes for conditions
+        layout.addWidget(QLabel("Evacuee Environment Condition Review:"), 2, 0, 1, 6)
+        
+        self.reaction_time_check = QCheckBox("Reaction Time")
+        self.hesitation_time_check = QCheckBox("Time for Leave Car")
+        self.visibility_check = QCheckBox("Visibility")
+        self.temperature_check = QCheckBox("Temperature")
+        self.smoke_check = QCheckBox("Smoke")
+        
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(self.reaction_time_check)
+        h_layout.addWidget(self.hesitation_time_check)
+        h_layout.addWidget(self.visibility_check)
+        h_layout.addWidget(self.temperature_check)
+        h_layout.addWidget(self.smoke_check)
+        layout.addLayout(h_layout, 3, 0, 1, 6)
         
         return group
 
     def get_data(self):
         """Extracts data from the UI elements with safe parsing."""
         try:
-            def f(text, default=0.0):
-                t = text.strip()
-                if t == "":
-                    return default
-                return float(t)
-
             return {
-                "hazard_calculation_method": self.calc_method_combo.currentText(),
-                "heat_release_rate": f(self.hrr_input.text()),
-                "fire_growth_rate": self.growth_rate_combo.currentText(),
-                "smoke_density": f(self.smoke_density_input.text()),
-                "visibility_limit": f(self.visibility_input.text()),
-                "temperature_limit": f(self.temp_input.text()),
-                "CO_limit": f(self.co_input.text()),
-                "reaction_time": f(self.reaction_time_input.text()),
-                "hesitation_time": f(self.hesitation_time_input.text()),
-                "old_people_ratio": f(self.old_people_ratio_input.text()),
-                "walking_speed_option": self.walking_speed_combo.currentText(),
-                "evac_speed_running": f(self.run_speed_input.text()),
-                "early_start_condition": self.early_start_check.isChecked(),
+                "hazard_calculation_method": "by Equation" if self.by_equation.isChecked() else "by MDB",
+                "heat_release_rate": float(self.hrr_input.text()),
+                "fire_growth_rate": float(self.growth_rate_input.text()),
             }
         except ValueError as e:
-            QMessageBox.critical(self, "Input Error", f"Invalid input value. Please check all fields. Error: {e}")
+            QMessageBox.critical(self, "Input Error", f"Invalid input value. Error: {e}")
             return None
 
     def set_data(self, har_evac_config):
         """Populates the UI elements with data from the database models."""
-        self.calc_method_combo.setCurrentText(har_evac_config.hazard_calculation_method)
         self.hrr_input.setText(str(har_evac_config.heat_release_rate))
-        self.growth_rate_combo.setCurrentText(har_evac_config.fire_growth_rate)
-        self.smoke_density_input.setText(str(har_evac_config.smoke_density))
-        self.visibility_input.setText(str(har_evac_config.visibility_limit))
-        self.temp_input.setText(str(har_evac_config.temperature_limit))
-        self.co_input.setText(str(har_evac_config.CO_limit))
-        self.reaction_time_input.setText(str(har_evac_config.reaction_time))
-        self.hesitation_time_input.setText(str(har_evac_config.hesitation_time))
-        self.old_people_ratio_input.setText(str(har_evac_config.old_people_ratio))
-        self.walking_speed_combo.setCurrentText(har_evac_config.walking_speed_option)
-        self.run_speed_input.setText(str(har_evac_config.evac_speed_running))
-        self.early_start_check.setChecked(har_evac_config.early_start_condition)
+        self.growth_rate_input.setText(str(har_evac_config.fire_growth_rate))
 
     def load_data(self):
         """Loads data from the database and populates the UI."""
-        # har_evac_config = self.data_manager.load_har_evac_data()
-        # if har_evac_config:
-        #     self.set_data(har_evac_config)
         pass
             
     def save_data(self):
         """Extracts data from the UI and saves it to the database."""
-        # data = self.get_data()
-        # if data:
-        #     self.data_manager.save_har_evac_data(data)
         pass
+        #     self.data_manager.save_har_evac_data(data)
+        pass    
+    def _on_language_changed(self, language_code: str):
+        """Handle language change event."""
+        lm = self.language_manager
+        
+        # Update group box titles
+        for i in range(self.layout().count()):
+            widget = self.layout().itemAt(i).widget()
+            if isinstance(widget, QGroupBox):
+                if "Tunnel Environment" in widget.title():
+                    widget.setTitle(lm.translate("Tunnel Environment Handling"))
+                elif "Fire Growth" in widget.title():
+                    widget.setTitle(lm.translate("Fire Growth Curve"))
+                elif "Evacuation Safety" in widget.title():
+                    widget.setTitle(lm.translate("Evacuation Safety"))
+                elif "Evacuation Timing" in widget.title():
+                    widget.setTitle(lm.translate("Evacuation Timing and Speed"))

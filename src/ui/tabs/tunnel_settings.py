@@ -1,148 +1,233 @@
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
-    QGroupBox, QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
-)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+                              QLineEdit, QRadioButton, QGroupBox, QGridLayout,
+                              QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox)
 from PyQt6.QtCore import Qt
-from src.models import VEHICLE_TYPES
-from src.database.data_manager import DataManager
 
-class TunnelBasicSettingsTab(QWidget):
-    def __init__(self, data_manager: DataManager):
+# Define vehicle types
+VEHICLE_TYPES = [
+    {"vehicle_type": "Car", "default_pcu": 1.0, "default_length": 4.0, "default_occupancy": 2},
+    {"vehicle_type": "Van", "default_pcu": 1.5, "default_length": 5.0, "default_occupancy": 3},
+    {"vehicle_type": "Bus", "default_pcu": 2.5, "default_length": 12.0, "default_occupancy": 40},
+    {"vehicle_type": "Truck", "default_pcu": 2.0, "default_length": 10.0, "default_occupancy": 2},
+]
+
+class TunnelSettingsTab(QWidget):
+    def __init__(self, language_manager):
         super().__init__()
-        self.data_manager = data_manager
-        self.layout = QVBoxLayout(self)
+        self.language_manager = language_manager
         
-        # 1. Tunnel Basic Info Group
-        self.layout.addWidget(self._create_tunnel_info_group())
+        # Connect to language change signal
+        self.language_manager.language_changed.connect(self._update_ui_text)
         
-        # 2. Traffic Volume and Vehicle Specs Group
-        self.layout.addWidget(self._create_traffic_volume_group())
+        main_layout = QVBoxLayout()
         
-        self.layout.addStretch(1)
+        # Create tunnel info group
+        self.tunnel_group = self._create_tunnel_info_group()
+        main_layout.addWidget(self.tunnel_group)
         
-        # Load initial data
-        self.load_data()
-
+        # Create traffic volume group
+        self.volume_group = self._create_traffic_volume_group()
+        main_layout.addWidget(self.volume_group)
+        
+        main_layout.addStretch()
+        self.setLayout(main_layout)
+    
+    def _update_ui_text(self):
+        """Update all UI text when language changes"""
+        lm = self.language_manager
+        
+        # Update tunnel group
+        self.tunnel_group.setTitle(lm.translate("Tunnel Basic Specifications"))
+        self.name_label.setText(lm.translate("Name :"))
+        self.mode_label.setText(lm.translate("Traffic Mode :"))
+        self.oneway_radio.setText(lm.translate("One-Way "))
+        self.twoway_radio.setText(lm.translate("Two-Way "))
+        self.length_label.setText(lm.translate("Length :"))
+        self.entrance_length_label.setText(lm.translate("Entrance Length :"))
+        self.slope_label.setText(lm.translate("Slope :"))
+        self.area_label.setText(lm.translate("Cross-sectional area :"))
+        self.height_label.setText(lm.translate("Height :"))
+        self.lanes_label.setText(lm.translate("Lanes :"))
+        self.lane_width_label.setText(lm.translate("Lane Width :"))
+        self.shoulder_width_label.setText(lm.translate("Shoulder Width :"))
+        self.ratio_group.setTitle(lm.translate("Two-Way Traffic Ratios "))
+        self.forward_ratio_label.setText(lm.translate("Forward Ratio :"))
+        self.backward_ratio_label.setText(lm.translate("Backward Ratio :"))
+        self.forward_lanes_label.setText(lm.translate("Forward Lanes :"))
+        self.backward_lanes_label.setText(lm.translate("Backward Lanes :"))
+        
+        # Update volume group and table
+        self.volume_group.setTitle(lm.translate("Traffic Volume"))
+        self.volume_table.setVerticalHeaderItem(0, QTableWidgetItem(lm.translate("+Direction ")))
+        self.volume_table.setVerticalHeaderItem(1, QTableWidgetItem(lm.translate("-Direction ")))
+        self.volume_table.setVerticalHeaderItem(2, QTableWidgetItem(lm.translate("+Mixing Ratio ")))
+        self.volume_table.setVerticalHeaderItem(3, QTableWidgetItem(lm.translate("-Mixing Ratio ")))
+        self.volume_table.setVerticalHeaderItem(4, QTableWidgetItem(lm.translate("PCU")))
+        self.volume_table.setVerticalHeaderItem(5, QTableWidgetItem(lm.translate("Length ")))
+        self.volume_table.setVerticalHeaderItem(6, QTableWidgetItem(lm.translate("Occupancy ")))
+    
     def _create_tunnel_info_group(self):
-        group = QGroupBox("Tunnel Basic Settings (터널기본제원)")
-        layout = QGridLayout(group)
+        """Create the tunnel basic specifications group"""
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Tunnel Basic Specifications"))
+        layout = QGridLayout()
         
-        # Row 1: Name and Mode
-        layout.addWidget(QLabel("Name (명칭):"), 0, 0)
+        row = 0
+        # Name
+        self.name_label = QLabel(lm.translate("Name :"))
         self.name_input = QLineEdit()
-        layout.addWidget(self.name_input, 0, 1)
+        layout.addWidget(self.name_label, row, 0)
+        layout.addWidget(self.name_input, row, 1, 1, 2)
+        row += 1
         
-        layout.addWidget(QLabel("Traffic Mode (통행방식):"), 0, 2)
-        mode_layout = QHBoxLayout()
-        self.oneway_radio = QRadioButton("One-Way (일방통행)")
-        self.twoway_radio = QRadioButton("Two-Way (대면통행)")
+        # Traffic Mode
+        self.mode_label = QLabel(lm.translate("Traffic Mode :"))
+        self.oneway_radio = QRadioButton(lm.translate("One-Way "))
+        self.twoway_radio = QRadioButton(lm.translate("Two-Way "))
         self.oneway_radio.setChecked(True)
-        mode_layout.addWidget(self.oneway_radio)
-        mode_layout.addWidget(self.twoway_radio)
-        layout.addLayout(mode_layout, 0, 3, 1, 3)
+        layout.addWidget(self.mode_label, row, 0)
+        layout.addWidget(self.oneway_radio, row, 1)
+        layout.addWidget(self.twoway_radio, row, 2)
+        row += 1
         
-        # Row 2: Length, Entrance Length, Slope
-        layout.addWidget(QLabel("Length (연장):"), 1, 0)
+        # Length
+        self.length_label = QLabel(lm.translate("Length :"))
         self.length_input = QLineEdit()
-        layout.addWidget(self.length_input, 1, 1)
+        layout.addWidget(self.length_label, row, 0)
+        layout.addWidget(self.length_input, row, 1, 1, 2)
+        row += 1
         
-        layout.addWidget(QLabel("Entrance Length (접수길이):"), 1, 2)
+        # Entrance Length
+        self.entrance_length_label = QLabel(lm.translate("Entrance Length :"))
         self.entrance_length_input = QLineEdit()
-        layout.addWidget(self.entrance_length_input, 1, 3)
+        layout.addWidget(self.entrance_length_label, row, 0)
+        layout.addWidget(self.entrance_length_input, row, 1, 1, 2)
+        row += 1
         
-        layout.addWidget(QLabel("Slope (구배):"), 1, 4)
+        # Slope
+        self.slope_label = QLabel(lm.translate("Slope :"))
         self.slope_input = QLineEdit()
-        layout.addWidget(self.slope_input, 1, 5)
+        layout.addWidget(self.slope_label, row, 0)
+        layout.addWidget(self.slope_input, row, 1, 1, 2)
+        row += 1
         
-        # Row 3: Area, Height, Lanes
-        layout.addWidget(QLabel("Area (단면적):"), 2, 0)
+        # Cross-sectional area
+        self.area_label = QLabel(lm.translate("Cross-sectional area :"))
         self.area_input = QLineEdit()
-        layout.addWidget(self.area_input, 2, 1)
+        layout.addWidget(self.area_label, row, 0)
+        layout.addWidget(self.area_input, row, 1, 1, 2)
+        row += 1
         
-        layout.addWidget(QLabel("Height (높이):"), 2, 2)
+        # Height
+        self.height_label = QLabel(lm.translate("Height :"))
         self.height_input = QLineEdit()
-        layout.addWidget(self.height_input, 2, 3)
+        layout.addWidget(self.height_label, row, 0)
+        layout.addWidget(self.height_input, row, 1, 1, 2)
+        row += 1
         
-        layout.addWidget(QLabel("Lanes (차선수):"), 2, 4)
+        # Lanes
+        self.lanes_label = QLabel(lm.translate("Lanes :"))
         self.lanes_input = QLineEdit()
-        layout.addWidget(self.lanes_input, 2, 5)
+        layout.addWidget(self.lanes_label, row, 0)
+        layout.addWidget(self.lanes_input, row, 1, 1, 2)
+        row += 1
         
-        # Row 4: Lane Width, Shoulder Width
-        layout.addWidget(QLabel("Lane Width (차로폭):"), 3, 0)
+        # Lane Width
+        self.lane_width_label = QLabel(lm.translate("Lane Width :"))
         self.lane_width_input = QLineEdit()
-        layout.addWidget(self.lane_width_input, 3, 1)
+        layout.addWidget(self.lane_width_label, row, 0)
+        layout.addWidget(self.lane_width_input, row, 1, 1, 2)
+        row += 1
         
-        layout.addWidget(QLabel("Shoulder Width (갓길폭):"), 3, 2)
+        # Shoulder Width
+        self.shoulder_width_label = QLabel(lm.translate("Shoulder Width :"))
         self.shoulder_width_input = QLineEdit()
-        layout.addWidget(self.shoulder_width_input, 3, 3)
+        layout.addWidget(self.shoulder_width_label, row, 0)
+        layout.addWidget(self.shoulder_width_input, row, 1, 1, 2)
+        row += 1
         
-        # Two-Way Traffic Ratios Group (Conditional)
-        self.twoway_group = QGroupBox("Two-Way Traffic Ratios (대면통행시)")
-        self.twoway_group.setFlat(True)
-        twoway_layout = QGridLayout(self.twoway_group)
+        # Two-Way Traffic Ratios (initially hidden)
+        self.ratio_group = QGroupBox(lm.translate("Two-Way Traffic Ratios "))
+        ratio_layout = QGridLayout()
         
-        twoway_layout.addWidget(QLabel("Forward Ratio (기준방향):"), 0, 0)
-        self.forward_ratio_input = QLineEdit()
-        twoway_layout.addWidget(self.forward_ratio_input, 0, 1)
-        twoway_layout.addWidget(QLabel("Forward Lanes (교통량(Lane)):"), 0, 2)
-        self.forward_lanes_input = QLineEdit()
-        twoway_layout.addWidget(self.forward_lanes_input, 0, 3)
+        self.forward_ratio_label = QLabel(lm.translate("Forward Ratio :"))
+        self.forward_ratio_input = QLineEdit("0.5")
+        ratio_layout.addWidget(self.forward_ratio_label, 0, 0)
+        ratio_layout.addWidget(self.forward_ratio_input, 0, 1)
         
-        twoway_layout.addWidget(QLabel("Backward Ratio (반대방향):"), 1, 0)
-        self.backward_ratio_input = QLineEdit()
-        twoway_layout.addWidget(self.backward_ratio_input, 1, 1)
-        twoway_layout.addWidget(QLabel("Backward Lanes (교통량(Lane)):"), 1, 2)
-        self.backward_lanes_input = QLineEdit()
-        twoway_layout.addWidget(self.backward_lanes_input, 1, 3)
+        self.backward_ratio_label = QLabel(lm.translate("Backward Ratio :"))
+        self.backward_ratio_input = QLineEdit("0.5")
+        ratio_layout.addWidget(self.backward_ratio_label, 1, 0)
+        ratio_layout.addWidget(self.backward_ratio_input, 1, 1)
         
-        layout.addWidget(self.twoway_group, 0, 6, 4, 3)
+        self.forward_lanes_label = QLabel(lm.translate("Forward Lanes :"))
+        self.forward_lanes_input = QLineEdit("2")
+        ratio_layout.addWidget(self.forward_lanes_label, 2, 0)
+        ratio_layout.addWidget(self.forward_lanes_input, 2, 1)
         
-        # Connect radio buttons to toggle visibility
-        self.oneway_radio.toggled.connect(self._toggle_twoway_group)
+        self.backward_lanes_label = QLabel(lm.translate("Backward Lanes :"))
+        self.backward_lanes_input = QLineEdit("2")
+        ratio_layout.addWidget(self.backward_lanes_label, 3, 0)
+        ratio_layout.addWidget(self.backward_lanes_input, 3, 1)
         
-        # Connect inputs to save data on change (simple auto-save)
-        for input_field in [self.name_input, self.length_input, self.entrance_length_input, self.slope_input, self.area_input, self.height_input, self.lanes_input, self.lane_width_input, self.shoulder_width_input, self.forward_ratio_input, self.backward_ratio_input, self.forward_lanes_input, self.backward_lanes_input]:
-            input_field.editingFinished.connect(self.save_data)
-        self.oneway_radio.toggled.connect(self.save_data)
+        self.ratio_group.setLayout(ratio_layout)
+        self.ratio_group.setVisible(False)
         
+        layout.addWidget(self.ratio_group, row, 0, 1, 3)
+        
+        # Connect radio buttons
+        self.twoway_radio.toggled.connect(self._on_mode_changed)
+        
+        group.setLayout(layout)
         return group
 
-    def _toggle_twoway_group(self):
-        is_twoway = self.twoway_radio.isChecked()
-        self.twoway_group.setVisible(is_twoway)
+    def _on_mode_changed(self, checked):
+        """Show/hide two-way traffic ratio inputs"""
+        self.ratio_group.setVisible(checked)
 
     def _create_traffic_volume_group(self):
-        group = QGroupBox("Traffic Volume and Vehicle Specs (교통량 및 차량제원)")
-        layout = QVBoxLayout(group)
+        """Create the traffic volume table group"""
+        lm = self.language_manager
+        group = QGroupBox(lm.translate("Traffic Volume"))
+        layout = QVBoxLayout()
         
+        # Create table
         self.volume_table = QTableWidget()
-        
-        # Define columns: 7 data columns (Vehicle Types)
+        self.volume_table.setRowCount(7)
         self.volume_table.setColumnCount(len(VEHICLE_TYPES))
         
-        # Define rows: 7 data rows (+Direction, -Direction, +Mixing, -Mixing, PCU, Length, Occupancy)
-        self.volume_table.setRowCount(7)
+        # Set horizontal headers (vehicle types - don't translate)
+        for col_idx, vtype in enumerate(VEHICLE_TYPES):
+            self.volume_table.setHorizontalHeaderItem(col_idx, QTableWidgetItem(vtype["vehicle_type"]))
         
-        # Set column headers
-        col_headers = [v["vehicle_type"] for v in VEHICLE_TYPES]
-        self.volume_table.setHorizontalHeaderLabels(col_headers)
+        # Set vertical headers (translated)
+        self.volume_table.setVerticalHeaderItem(0, QTableWidgetItem(lm.translate("+Direction ")))
+        self.volume_table.setVerticalHeaderItem(1, QTableWidgetItem(lm.translate("-Direction ")))
+        self.volume_table.setVerticalHeaderItem(2, QTableWidgetItem(lm.translate("+Mixing Ratio ")))
+        self.volume_table.setVerticalHeaderItem(3, QTableWidgetItem(lm.translate("-Mixing Ratio ")))
+        self.volume_table.setVerticalHeaderItem(4, QTableWidgetItem(lm.translate("PCU")))
+        self.volume_table.setVerticalHeaderItem(5, QTableWidgetItem(lm.translate("Length ")))
+        self.volume_table.setVerticalHeaderItem(6, QTableWidgetItem(lm.translate("Occupancy ")))
         
-        # Set row headers
-        row_headers = ["+Direction (교통량)", "-Direction (교통량)", "+Mixing Ratio (혼입율)", "-Mixing Ratio (혼입율)", 
-                       "PCU", "Length (차량길이)", "Occupancy (탑승인원)"]
-        self.volume_table.setVerticalHeaderLabels(row_headers)
+        # Initialize with default values
+        for col_idx, vtype in enumerate(VEHICLE_TYPES):
+            self.volume_table.setItem(0, col_idx, QTableWidgetItem("0"))
+            self.volume_table.setItem(1, col_idx, QTableWidgetItem("0"))
+            self.volume_table.setItem(2, col_idx, QTableWidgetItem("0.0"))
+            self.volume_table.setItem(3, col_idx, QTableWidgetItem("0.0"))
+            self.volume_table.setItem(4, col_idx, QTableWidgetItem(str(vtype["default_pcu"])))
+            self.volume_table.setItem(5, col_idx, QTableWidgetItem(str(vtype["default_length"])))
+            self.volume_table.setItem(6, col_idx, QTableWidgetItem(str(vtype["default_occupancy"])))
         
-        # Resize columns to fit content
         self.volume_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         
-        # Connect table to save data on change
-        self.volume_table.cellChanged.connect(self.save_data)
-        
         layout.addWidget(self.volume_table)
+        group.setLayout(layout)
         return group
 
     def get_data(self):
         """Extracts data from the UI elements."""
+        lm = self.language_manager
         try:
             # Safe parsers: treat empty strings as zero to avoid startup errors
             def f(text, default=0.0):
@@ -200,8 +285,8 @@ class TunnelBasicSettingsTab(QWidget):
                 data["vehicle_data"].append(vehicle_data)
                 
             return data
-        except ValueError as e:
-            QMessageBox.critical(self, "Input Error", f"Invalid input value. Please check all fields. Error: {e}")
+        except Exception as e:
+            QMessageBox.critical(self, lm.translate("Input Error"), f"Invalid input value. Please check all fields. Error: {e}")
             return None
 
     def set_data(self, tunnel_config, vehicle_data):
@@ -228,39 +313,10 @@ class TunnelBasicSettingsTab(QWidget):
         
         # Populate vehicle data table
         for col_idx, v_data in enumerate(vehicle_data):
-            # Row 0: +Direction (Traffic Volume)
             self.volume_table.setItem(0, col_idx, QTableWidgetItem(str(v_data.volume_plus)))
-            # Row 1: -Direction (Traffic Volume)
             self.volume_table.setItem(1, col_idx, QTableWidgetItem(str(v_data.volume_minus)))
-            # Row 2: +Mixing Ratio (혼입율)
             self.volume_table.setItem(2, col_idx, QTableWidgetItem(str(v_data.mixing_ratio_plus)))
-            # Row 3: -Mixing Ratio (혼입율)
             self.volume_table.setItem(3, col_idx, QTableWidgetItem(str(v_data.mixing_ratio_minus)))
-            # Row 4: PCU (Read-only)
-            item_pcu = QTableWidgetItem(str(v_data.pcu))
-            item_pcu.setFlags(item_pcu.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.volume_table.setItem(4, col_idx, item_pcu)
-            # Row 5: Length (Read-only)
-            item_len = QTableWidgetItem(str(v_data.length))
-            item_len.setFlags(item_len.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.volume_table.setItem(5, col_idx, item_len)
-            # Row 6: Occupancy (Read-only)
-            item_occ = QTableWidgetItem(str(v_data.occupancy))
-            item_occ.setFlags(item_occ.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.volume_table.setItem(6, col_idx, item_occ)
-
-    def load_data(self):
-        """Loads data from the database and populates the UI."""
-        tunnel_config, vehicle_data = self.data_manager.load_tunnel_data()
-        if tunnel_config and vehicle_data:
-            self.set_data(tunnel_config, vehicle_data)
-            
-    def save_data(self):
-        """Extracts data from the UI and saves it to the database."""
-        data = self.get_data()
-        if data:
-            if self.data_manager.save_tunnel_data(data):
-                # Update status bar or show a small notification
-                pass
-            else:
-                QMessageBox.warning(self, "Save Error", "Failed to save Tunnel Basic Settings data.")
+            self.volume_table.setItem(4, col_idx, QTableWidgetItem(str(v_data.pcu)))
+            self.volume_table.setItem(5, col_idx, QTableWidgetItem(str(v_data.length)))
+            self.volume_table.setItem(6, col_idx, QTableWidgetItem(str(v_data.occupancy)))
