@@ -1,0 +1,204 @@
+===============================================================================
+  PYTHON FDS TO FDB CONVERTER - QUICK START GUIDE
+===============================================================================
+
+OVERVIEW
+--------
+Pure Python replacement for FDS2FDB.exe
+✓ Cross-platform (Windows/Linux/Mac)
+✓ FDS5 + FDS6 support
+✓ Integrated with QRA System
+
+===============================================================================
+INSTALLATION
+===============================================================================
+
+Step 1: Install Required Packages
+----------------------------------
+pip install numpy
+
+Step 2: Install Optional Package (Recommended for FDS6)
+--------------------------------------------------------
+pip install fdsreader
+
+Note: Converter works without fdsreader using fallback binary reader
+
+===============================================================================
+USAGE
+===============================================================================
+
+Method 1: Command Line
+----------------------
+python fds_to_fdb_converter.py <simulation_dir> [config_file] [output_file]
+
+Example:
+python fds_to_fdb_converter.py C:/FDS_Outputs/030_N_NVC_pos500 C:/CONVERT.DES
+
+
+Method 2: Python Script
+-----------------------
+from pathlib import Path
+from fds_workflow.fds_to_fdb_converter import convert_fds_to_fdb
+
+fdb_file = convert_fds_to_fdb(
+    simulation_dir=Path("C:/FDS_Outputs/030_N_NVC_pos500"),
+    config_file=Path("C:/CONVERT.DES")
+)
+
+
+Method 3: Integrated in QRA System
+-----------------------------------
+Automatically runs after FDS simulations complete (see integration guide)
+
+===============================================================================
+CONFIGURATION FILE (CONVERT.DES)
+===============================================================================
+
+Format:
+-------
+FDS_ID  AxisDir  VertDir  TimeDtep iTempSkip  FDS_SLC_File_Number
+TN      X        Z        30       6          1  2  3  4  5  6 0 0 0 0 0 0
+Convertion Factor
+SOOT       CO2       CO        TEMP      RADI      OXYGEN 
+1000000.0  100.0     1000000.0 1.0       0.25      100.0
+
+Parameters:
+-----------
+FDS_ID      = Simulation identifier (e.g., TN)
+AxisDir     = Primary axis (X, Y, or Z)
+VertDir     = Vertical direction (X, Y, or Z)
+TimeDtep    = Time step interval (e.g., 30)
+iTempSkip   = Temporal skip (e.g., 6 = every 6th frame)
+File Numbers= Slice file numbers for SOOT, CO2, CO, TEMP, RADI, OXYGEN
+
+Conversion Factors:
+-------------------
+SOOT    = 1,000,000  (mass fraction → ppm)
+CO2     = 100        (fraction → percentage)
+CO      = 1,000,000  (mass fraction → ppm)
+TEMP    = 1.0        (no conversion, Celsius)
+RADI    = 0.25       (radiation scaling)
+OXYGEN  = 100        (fraction → percentage)
+
+===============================================================================
+INPUT FILES REQUIRED
+===============================================================================
+
+1. Slice Files (.slcf)
+   - TN_01.slcf (SOOT)
+   - TN_02.slcf (CO2)
+   - TN_03.slcf (CO)
+   - TN_04.slcf (TEMP)
+   - TN_05.slcf (RADI)
+   - TN_06.slcf (OXYGEN)
+
+2. SMV File (for fdsreader)
+   - TN.smv
+
+3. Configuration File (optional)
+   - CONVERT.DES
+
+===============================================================================
+OUTPUT FILES
+===============================================================================
+
+Primary Output:
+---------------
+TN.fdb - Binary database file containing:
+  • Time-series data for all variables
+  • Spatial coordinate information
+  • Metadata and conversion parameters
+
+Log Output:
+-----------
+Console/log file showing:
+  • Processing status for each variable
+  • Conversion factors applied
+  • Success/error messages
+
+===============================================================================
+EXAMPLE SESSION
+===============================================================================
+
+$ python fds_to_fdb_converter.py C:/FDS_Outputs/030_N_NVC_pos500
+
+2026-02-12 10:30:15 - INFO - Starting FDS to FDB conversion
+2026-02-12 10:30:15 - INFO - Simulation directory: C:\FDS_Outputs\030_N_NVC_pos500
+2026-02-12 10:30:15 - INFO - Output file: C:\FDS_Outputs\030_N_NVC_pos500\TN.fdb
+2026-02-12 10:30:16 - INFO - Processing SOOT (file 1)
+2026-02-12 10:30:17 - INFO - Successfully processed SOOT
+2026-02-12 10:30:17 - INFO - Processing CO2 (file 2)
+2026-02-12 10:30:18 - INFO - Successfully processed CO2
+2026-02-12 10:30:18 - INFO - Processing CO (file 3)
+2026-02-12 10:30:19 - INFO - Successfully processed CO
+2026-02-12 10:30:19 - INFO - Processing TEMP (file 4)
+2026-02-12 10:30:20 - INFO - Successfully processed TEMP
+2026-02-12 10:30:20 - INFO - Processing RADI (file 5)
+2026-02-12 10:30:21 - INFO - Successfully processed RADI
+2026-02-12 10:30:21 - INFO - Processing OXYGEN (file 6)
+2026-02-12 10:30:22 - INFO - Successfully processed OXYGEN
+2026-02-12 10:30:22 - INFO - Successfully wrote FDB file
+2026-02-12 10:30:22 - INFO - Conversion complete: TN.fdb
+
+===============================================================================
+TROUBLESHOOTING
+===============================================================================
+
+Issue: "fdsreader not installed"
+Solution: pip install fdsreader (or use fallback binary reader)
+
+Issue: "No .smv file found"
+Solution: Ensure FDS simulation completed successfully
+
+Issue: "Slice file not found"
+Solution: Check FDS_ID in CONVERT.DES matches simulation files
+
+Issue: "Error reading binary slice file"
+Solution: Install fdsreader for better compatibility
+
+===============================================================================
+ADVANTAGES OVER FDS2FDB.EXE
+===============================================================================
+
+✓ Cross-platform (Windows/Linux/Mac)
+✓ FDS6 support (FDS2FDB.exe is FDS5 only)
+✓ Integrated workflow (no external .exe needed)
+✓ Customizable (edit Python code)
+✓ Better error messages
+✓ Automated in QRA System
+
+===============================================================================
+FILE LOCATIONS
+===============================================================================
+
+Converter Module:
+  fds_workflow/fds_to_fdb_converter.py
+
+Documentation:
+  FDS_TO_FDB_PYTHON_GUIDE.md (detailed guide)
+  FDS_TO_FDB_QUICKSTART.txt (this file)
+
+Configuration:
+  CONVERT.DES (user-provided)
+
+===============================================================================
+NEXT STEPS
+===============================================================================
+
+1. Install numpy: pip install numpy
+2. Install fdsreader (optional): pip install fdsreader
+3. Create CONVERT.DES configuration file
+4. Run converter on FDS output directory
+5. Verify TN.fdb file is created
+6. Use FDB file in EVC simulation
+
+===============================================================================
+SUPPORT
+===============================================================================
+
+For detailed documentation, see: FDS_TO_FDB_PYTHON_GUIDE.md
+For QRA System integration, see: Integration section in guide
+
+===============================================================================
+STATUS: READY TO USE
+===============================================================================

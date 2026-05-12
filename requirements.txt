@@ -1,0 +1,25 @@
+# QRA System v4.5.0 - Python Dependencies
+# Installation: pip install -r requirements.txt
+
+# GUI Framework
+PyQt5>=5.15.0
+
+# Database
+# sqlite3 is built into Python (do not install via pip)
+
+# Numerical Computing
+numpy>=1.24.0
+
+# Data Analysis (optional, for advanced statistics)
+pandas>=2.0.0
+fdsreader>=0.9.0    # For FDS file reading (optional, converter has fallback to numpy)
+mesa==3.5.0
+matplotlib>=3.7.0  # For plotting and visualization
+
+# FDS File Reading (for FDS to FDB conversion)
+# Note: fdsreader is optional, converter has fallback to numpy
+# fdsreader>=0.9.0
+
+# Optional: For enhanced features
+# scipy>=1.10.0  # For advanced statistical analysis
+# openpyxl>=3.1.0  # For Excel file support

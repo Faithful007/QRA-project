@@ -1,0 +1,207 @@
+================================================================================
+QRA SYSTEM IMPORT ERROR FIX - STEP BY STEP GUIDE
+================================================================================
+
+ERROR MESSAGE:
+--------------
+Failed to import FDS to FDB converter:
+No module named 'fds_workflow.fds_to_fdb_converter'; 'fds_workflow' is not a package
+
+Please ensure fds_to_fdb_converter.py is in fds_workflow/ directory.
+
+
+SOLUTION - Choose ONE method below:
+================================================================================
+
+
+METHOD 1: AUTOMATIC FIX (RECOMMENDED)
+================================================================================
+
+1. Open Command Prompt or Terminal
+
+2. Navigate to your QRA System directory:
+   cd C:\Users\USER\sourcecodes\QRA\qra_system_v2
+
+3. Run the fix script:
+   python fix_imports.py
+
+4. You should see:
+   ✓ SUCCESS: All import errors fixed!
+
+5. Run the QRA System:
+   python qra_main_app.py
+
+6. The error should be gone!
+
+
+METHOD 2: MANUAL FIX
+================================================================================
+
+Step 1: Locate the __init__.py file
+------------------------------------
+Navigate to:
+    C:\Users\USER\sourcecodes\QRA\qra_system_v2\fds_workflow\__init__.py
+
+
+Step 2: Open __init__.py in a text editor
+------------------------------------------
+Use Notepad, VS Code, or any text editor
+
+
+Step 3: Replace the entire content with this:
+----------------------------------------------
+
+"""
+FDS Workflow Package
+
+This package contains modules for FDS simulation workflow:
+- fds_generator: Generate FDS input files
+- fds_runner: Run FDS simulations
+- fds_to_fdb_converter: Convert FDS outputs to FDB format
+- fds_workflow: Orchestrate the complete workflow
+"""
+
+# Import key classes and functions for easy access
+try:
+    from .fds_generator import FireScenario, FDSInputGenerator
+except ImportError as e:
+    print(f"Warning: Could not import from fds_generator: {e}")
+    FireScenario = None
+    FDSInputGenerator = None
+
+try:
+    from .fds_to_fdb_converter import FDSToFDBConverter
+except ImportError as e:
+    print(f"Warning: Could not import FDSToFDBConverter: {e}")
+    FDSToFDBConverter = None
+
+__all__ = [
+    'FireScenario',
+    'FDSInputGenerator',
+    'FDSToFDBConverter',
+]
+
+__version__ = '4.5.0'
+
+
+Step 4: Save the file
+---------------------
+Save and close the editor
+
+
+Step 5: Test the fix
+--------------------
+Run the QRA System:
+    python qra_main_app.py
+
+The import error should be gone!
+
+
+METHOD 3: VERIFY FILE STRUCTURE
+================================================================================
+
+If both methods above don't work, verify your file structure:
+
+Required files in fds_workflow/:
+---------------------------------
+C:\Users\USER\sourcecodes\QRA\qra_system_v2\fds_workflow\
+├── __init__.py                    ← Must exist and have content above
+├── fds_generator.py               ← Must exist
+├── fds_to_fdb_converter.py        ← Must exist (THIS IS CRITICAL!)
+├── fds_runner.py                  ← Optional
+└── fds_workflow.py                ← Optional
+
+
+Check if fds_to_fdb_converter.py exists:
+-----------------------------------------
+1. Open File Explorer
+2. Navigate to: C:\Users\USER\sourcecodes\QRA\qra_system_v2\fds_workflow\
+3. Look for: fds_to_fdb_converter.py
+
+If it's missing:
+- Extract the QRA_System_v4.5.0_Final.zip again
+- Copy fds_to_fdb_converter.py to the fds_workflow directory
+
+
+TROUBLESHOOTING
+================================================================================
+
+Issue 1: "python: command not found"
+-------------------------------------
+Solution: Use "python3" instead of "python"
+    python3 fix_imports.py
+    python3 qra_main_app.py
+
+
+Issue 2: "No module named 'numpy'" or similar
+----------------------------------------------
+Solution: Install dependencies first
+    pip install -r requirements.txt
+
+
+Issue 3: Still getting import error after fix
+----------------------------------------------
+Solution: 
+1. Close the QRA System completely
+2. Delete all __pycache__ folders:
+   - Delete: C:\Users\USER\sourcecodes\QRA\qra_system_v2\fds_workflow\__pycache__
+   - Delete: C:\Users\USER\sourcecodes\QRA\qra_system_v2\__pycache__
+3. Run fix_imports.py again
+4. Start QRA System
+
+
+Issue 4: Permission denied when saving __init__.py
+---------------------------------------------------
+Solution: Run your text editor as Administrator
+- Right-click Notepad/VS Code
+- Select "Run as administrator"
+- Open and edit __init__.py
+- Save
+
+
+VERIFICATION
+================================================================================
+
+After applying the fix, you should see this when starting QRA System:
+
+✓ QRADatabase imported successfully
+✓ FDSWorkflow imported successfully
+
+And NO error dialog about "Failed to import FDS to FDB converter"
+
+
+STILL HAVING ISSUES?
+================================================================================
+
+If none of the above solutions work:
+
+1. Check Python version:
+   python --version
+   (Should be Python 3.8 or higher)
+
+2. Check if file exists:
+   dir C:\Users\USER\sourcecodes\QRA\qra_system_v2\fds_workflow\fds_to_fdb_converter.py
+
+3. Check file permissions:
+   - Make sure you have read/write access to the fds_workflow directory
+
+4. Re-extract the zip file:
+   - Delete the qra_system_v2 directory
+   - Extract QRA_System_v4.5.0_Final.zip again
+   - Run fix_imports.py
+
+
+CONTACT
+================================================================================
+
+If you continue to experience issues after following all steps above,
+please provide:
+1. The exact error message
+2. Your Python version (python --version)
+3. Contents of fds_workflow/__init__.py
+4. List of files in fds_workflow/ directory
+
+
+================================================================================
+END OF GUIDE
+================================================================================

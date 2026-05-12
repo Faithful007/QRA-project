@@ -1,0 +1,118 @@
+========================================
+FDS VERSION ENFORCEMENT - QUICK REFERENCE
+QRA System v4.5.0
+========================================
+
+WHAT IT DOES:
+-------------
+Prevents FDS5 input files from running with FDS6 (and vice versa)
+by automatically controlling which batch file you can use.
+
+
+HOW TO USE:
+-----------
+
+STEP 1: Select FDS Version (Tab 2)
+-----------------------------------
+⚪ FDS 6  ← Select this for FDS6 simulations
+⚪ FDS 5  ← Select this for FDS5 simulations
+
+
+STEP 2: Notice Visual Changes (Tab 3)
+--------------------------------------
+
+If FDS6 selected:
+  FDS6 Batch File: [GREEN HIGHLIGHTED] ← USE THIS
+  FDS5 Batch File: [GRAYED OUT]        ← DISABLED
+
+If FDS5 selected:
+  FDS6 Batch File: [GRAYED OUT]        ← DISABLED
+  FDS5 Batch File: [ORANGE HIGHLIGHTED] ← USE THIS
+
+
+STEP 3: Configure Batch File
+-----------------------------
+1. Click "Browse..." next to the HIGHLIGHTED field
+2. Select your batch file (run_fds6.bat or run_fds5.bat)
+3. The grayed-out field cannot be edited (this is intentional!)
+
+
+STEP 4: Run Simulations
+------------------------
+Click "Run Simulations" - system automatically uses the correct batch file
+
+
+COLOR CODING:
+-------------
+GREEN   = FDS6 active (use this field)
+ORANGE  = FDS5 active (use this field)
+GRAY    = Disabled (cannot use this field)
+
+
+COMMON SCENARIOS:
+-----------------
+
+Scenario 1: Using FDS6
+  Tab 2: Select "FDS 6"
+  Tab 3: Configure FDS6 batch file (green field)
+  Result: FDS6 simulations run successfully
+
+Scenario 2: Using FDS5
+  Tab 2: Select "FDS 5"
+  Tab 3: Configure FDS5 batch file (orange field)
+  Result: FDS5 simulations run successfully
+
+Scenario 3: Switching from FDS6 to FDS5
+  Tab 2: Change from "FDS 6" to "FDS 5"
+  Tab 3: Notice orange field is now active
+  Tab 3: Configure FDS5 batch file
+  Tab 2: Regenerate FDS files with FDS5
+  Tab 3: Run simulations with FDS5
+
+
+ERROR MESSAGES:
+---------------
+
+"FDS6 Not Found"
+  → Configure FDS6 batch file in the green-highlighted field
+
+"FDS5 Not Found"
+  → Configure FDS5 batch file in the orange-highlighted field
+
+
+TROUBLESHOOTING:
+----------------
+
+Q: Both fields are grayed out
+A: Restart QRA System and select FDS version in Tab 2
+
+Q: Wrong field is highlighted
+A: Check FDS version selection in Tab 2
+
+Q: Can't edit the grayed field
+A: This is correct! Only the highlighted field should be used
+
+Q: Simulation fails
+A: Make sure you configured the highlighted batch file
+
+
+BENEFITS:
+---------
+✓ Prevents version mismatch errors
+✓ Clear visual guidance
+✓ Automatic enforcement
+✓ Foolproof operation
+
+
+REMEMBER:
+---------
+Tab 2 selection → Controls Tab 3 batch file
+GREEN = FDS6
+ORANGE = FDS5
+GRAY = Disabled
+
+
+========================================
+For detailed documentation, see:
+FDS_VERSION_ENFORCEMENT.md
+========================================

@@ -1,0 +1,128 @@
+========================================
+DUAL FDS INSTALLATION - QUICK START
+QRA System v4.5.0
+========================================
+
+PROBLEM:
+--------
+FDS5 and FDS6 conflict when both are installed on the same system.
+
+SOLUTION:
+---------
+Use batch files to isolate each FDS version's environment.
+
+SETUP (5 MINUTES):
+------------------
+
+STEP 1: Create Batch Files
+---------------------------
+
+A. For FDS6:
+   1. Open Notepad
+   2. Copy this content:
+   
+      @echo off
+      set PATH=C:\FDS6\FDS6\bin;C:\FDS6\SMV6;%PATH%
+      cmd
+   
+   3. Save as: C:\FDS6\run_fds6.bat
+   4. Edit paths if your FDS6 is in a different location
+
+B. For FDS5:
+   1. Open Notepad
+   2. Copy this content:
+   
+      @echo off
+      set PATH=C:\FDS5;C:\Program Files (x86)\NIST\FDS;%PATH%
+      cmd
+   
+   3. Save as: C:\FDS5\run_fds5.bat
+   4. Edit paths if your FDS5 is in a different location
+
+
+STEP 2: Test Batch Files
+-------------------------
+
+A. Test FDS6:
+   1. Double-click run_fds6.bat
+   2. In the command window, type: fds --version
+   3. Should show: Fire Dynamics Simulator 6.x.x
+   4. Type: exit
+
+B. Test FDS5:
+   1. Double-click run_fds5.bat
+   2. In the command window, type: fds --version
+   3. Should show: Fire Dynamics Simulator 5.x.x
+   4. Type: exit
+
+
+STEP 3: Configure QRA System
+-----------------------------
+
+1. Open QRA System
+2. Go to Tab 3: Run Simulation
+3. Find "FDS Tools Configuration" section
+4. Click "Browse..." next to "FDS6 Batch File"
+5. Select C:\FDS6\run_fds6.bat
+6. Click "Browse..." next to "FDS5 Batch File"
+7. Select C:\FDS5\run_fds5.bat
+
+
+STEP 4: Use the System
+-----------------------
+
+1. Go to Tab 2: Generate FDS
+2. Select FDS version (FDS6 or FDS5)
+3. Generate FDS files
+4. Go to Tab 3: Run Simulation
+5. Click "Run Simulations"
+6. System will automatically use the correct batch file
+
+
+VERIFICATION:
+-------------
+
+✓ Batch files created
+✓ Batch files tested manually
+✓ QRA System configured
+✓ Test simulation runs successfully
+
+
+COMMON PATHS:
+-------------
+
+FDS6 Default:
+  - Bin: C:\FDS6\FDS6\bin
+  - SMV: C:\FDS6\SMV6
+  - Batch: C:\FDS6\run_fds6.bat
+
+FDS5 Default:
+  - Bin: C:\FDS5
+  - NIST: C:\Program Files (x86)\NIST\FDS
+  - Batch: C:\FDS5\run_fds5.bat
+
+
+TROUBLESHOOTING:
+----------------
+
+Problem: "FDS not found"
+Solution: Check paths in batch file match your installation
+
+Problem: Wrong FDS version runs
+Solution: Check radio button selection in Tab 2
+
+Problem: Simulations fail
+Solution: Test batch file manually first
+
+
+NEED HELP?
+----------
+
+1. Read: DUAL_FDS_INSTALLATION_GUIDE.md (detailed guide)
+2. Check: Sample batch files in qra_system_v2 folder
+3. Test: Run batch files manually before using QRA System
+
+
+========================================
+Status: READY TO USE
+========================================

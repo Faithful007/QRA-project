@@ -1,0 +1,232 @@
+================================================================================
+QRA SYSTEM v4.5.0 - INSTALLATION INSTRUCTIONS
+================================================================================
+
+Thank you for downloading the QRA System!
+
+Follow these steps to get started:
+
+================================================================================
+STEP 1: EXTRACT FILES
+================================================================================
+
+Extract the zip file to your desired location, for example:
+  C:\QRA_System\
+
+================================================================================
+STEP 2: INSTALL PYTHON DEPENDENCIES
+================================================================================
+
+1. Open Command Prompt (cmd) or Terminal
+
+2. Navigate to the extracted directory:
+   cd C:\QRA_System\qra_system_v2
+
+3. Install required Python packages:
+   pip install -r requirements.txt
+
+   Required packages:
+   • PyQt6 (GUI framework)
+   • numpy (numerical computing)
+   • pandas (data analysis)
+   • matplotlib (plotting)
+
+================================================================================
+STEP 3: CONFIGURE FDS BATCH FILES
+================================================================================
+
+1. Copy batch files to C:\ drive:
+   
+   copy run_fds6.bat C:\run_fds6.bat
+   copy run_fds5.bat C:\run_fds5.bat
+
+2. Edit batch files to match your FDS installation:
+
+   For FDS6 (C:\run_fds6.bat):
+   • Update FDS6 path: C:\FDS6\FDS6\bin
+   • Update SMV6 path: C:\FDS6\SMV6
+
+   For FDS5 (C:\run_fds5.bat):
+   • Update FDS5 path: C:\FDS5
+   • Update NIST path: C:\Program Files (x86)\NIST\FDS
+
+3. Verify FDS executables exist:
+   
+   FDS6:
+   • C:\FDS6\FDS6\bin\fds_openmp.exe (parallel)
+   • C:\FDS6\FDS6\bin\fds.exe (single-core)
+   
+   FDS5:
+   • C:\FDS5\fds5_mpi.exe (parallel)
+   • C:\FDS5\fds5.exe (single-core)
+
+================================================================================
+STEP 4: RUN THE APPLICATION
+================================================================================
+
+1. Navigate to the application directory:
+   cd C:\QRA_System\qra_system_v2
+
+2. Run the main application:
+   python qra_main_app.py
+
+3. The QRA System GUI will open
+
+================================================================================
+STEP 5: CONFIGURE PROJECT (First Time)
+================================================================================
+
+1. Go to Tab 1: Directory Setup
+
+2. Set project directories:
+   • Project Directory: C:\Projects\MyQRAProject
+   • FDS Inputs: C:\Projects\MyQRAProject\fds_inputs
+   • FDS Outputs: C:\Projects\MyQRAProject\fds_outputs
+   • EVC Directory: C:\Projects\MyQRAProject\evc
+
+3. Click "Create Directories" to create folder structure
+
+4. Click "Save Configuration"
+
+================================================================================
+STEP 6: GENERATE FDS FILES (Tab 2)
+================================================================================
+
+1. Select FDS Version: FDS6 (recommended)
+
+2. Select Fuel Type: Diesel (default for ≥20MW scenarios)
+
+3. Select HRR values (check desired boxes):
+   ☑ 20 MW
+   ☑ 30 MW
+   ☑ 100 MW
+
+4. Select Congestion:
+   ☑ Normal
+   ☑ Congested
+
+5. Select Ventilation scenarios (at least one):
+   ☑ NVC (Natural Ventilation Closed)
+
+6. Set Fire Positions:
+   Position 1: 1000 m
+   Position 2: 1500 m
+
+7. Click "Generate FDS Files"
+
+8. Verify files created in fds_inputs/ directory
+
+================================================================================
+STEP 7: RUN FDS SIMULATIONS (Tab 3)
+================================================================================
+
+1. Configure FDS Tools:
+   • FDS6 Batch File: C:/run_fds6.bat
+   • FDS5 Batch File: C:/run_fds5.bat (if using FDS5)
+   • FDS Executable: C:/FDS6/FDS6/bin/fds_openmp.exe
+   • fds2ascii Tool: C:/FDS6/FDS6/bin/fds2ascii.exe
+
+2. Click "▶ Run FDS Simulations"
+
+3. Monitor progress in status area
+
+4. Wait for simulations to complete
+
+5. Verify .smv files created in fds_outputs/ subdirectories
+
+================================================================================
+STEP 8: CONVERT SMV TO FDB (Tab 3)
+================================================================================
+
+1. After simulations complete, click "🔄 Convert SMV to FDB"
+
+2. Confirm the conversion dialog
+
+3. Wait for conversion to complete
+
+4. Check status display for results
+
+5. Verify TN.fdb files created in fds_outputs/ subdirectories
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Issue: "ModuleNotFoundError: No module named 'PyQt6'"
+Solution: Install PyQt6: pip install PyQt6
+
+Issue: "FDS simulations fail with Return code 1"
+Solution: 
+  1. Check batch file paths in Tab 3
+  2. Verify FDS executables exist
+  3. Check FDS log files in fds_outputs/
+
+Issue: "No FDS simulation outputs found"
+Solution:
+  1. Run FDS simulations first (Tab 3)
+  2. Wait for completion
+  3. Check fds_outputs/ directory for .smv files
+
+Issue: "Failed to import FDS to FDB converter"
+Solution:
+  1. Ensure fds_to_fdb_converter.py is in fds_workflow/
+  2. Ensure fdb_conversion_db.py is in database/
+  3. Check __init__.py files exist
+
+================================================================================
+DOCUMENTATION
+================================================================================
+
+Comprehensive documentation is available in the docs/ directory:
+
+• README.md - Complete project overview
+• FUEL_TYPE_UPGRADE_GUIDE.md - Fuel configuration guide
+• FDS_VERSION_ENFORCEMENT.md - FDS version enforcement
+• FDS_TO_FDB_INTEGRATION_GUIDE.md - FDS to FDB conversion
+• DUAL_FDS_INSTALLATION_GUIDE.md - Dual FDS5/FDS6 setup
+
+================================================================================
+SYSTEM REQUIREMENTS
+================================================================================
+
+• Python 3.8 or higher
+• Windows 10/11 (recommended) or Linux/Mac
+• 8 GB RAM minimum (16 GB recommended)
+• Multi-core CPU (for parallel processing)
+• FDS6 installed (FDS5 optional)
+• 50 GB free disk space (for simulation outputs)
+
+================================================================================
+QUICK START SUMMARY
+================================================================================
+
+1. Extract zip file
+2. Install Python dependencies: pip install -r requirements.txt
+3. Copy and configure batch files (run_fds6.bat, run_fds5.bat)
+4. Run application: python qra_main_app.py
+5. Configure directories (Tab 1)
+6. Generate FDS files (Tab 2)
+7. Run simulations (Tab 3)
+8. Convert to FDB (Tab 3)
+9. Analyze results (Tabs 4-7)
+
+================================================================================
+SUPPORT
+================================================================================
+
+For issues, questions, or feature requests:
+• Check documentation in docs/ directory
+• Review troubleshooting section above
+• Contact development team
+
+================================================================================
+VERSION
+================================================================================
+
+QRA System v4.5.0
+Released: February 12, 2026
+Status: Production Ready
+
+================================================================================
+
+Happy Risk Assessment! 🔥🚇

@@ -1,0 +1,126 @@
+╔═══════════════════════════════════════════════════════════════════╗
+║         QRA SYSTEM v4.5.0 - FUEL TYPE QUICK REFERENCE             ║
+╚═══════════════════════════════════════════════════════════════════╝
+
+┌───────────────────────────────────────────────────────────────────┐
+│ FUEL TYPE SELECTION GUIDE                                         │
+└───────────────────────────────────────────────────────────────────┘
+
+┌─────────────┬──────────────────┬─────────────┬──────────────────┐
+│ Fire Size   │ Recommended Fuel │ Auto-Select │ Typical Vehicle  │
+├─────────────┼──────────────────┼─────────────┼──────────────────┤
+│ 5 MW        │ Petrol           │ ✓ Yes       │ Motorcycle       │
+│ 10 MW       │ Petrol           │ ✓ Yes       │ Passenger Car    │
+│ 20 MW       │ Diesel           │ ✓ Yes       │ Van / SUV        │
+│ 30 MW       │ Diesel           │ ✓ Yes       │ Bus              │
+│ 50 MW       │ Diesel           │ ✓ Yes       │ Large Bus        │
+│ 100 MW      │ Diesel           │ ✓ Yes       │ Truck / Tanker   │
+└─────────────┴──────────────────┴─────────────┴──────────────────┘
+
+┌───────────────────────────────────────────────────────────────────┐
+│ FUEL PROPERTIES TABLE                                             │
+└───────────────────────────────────────────────────────────────────┘
+
+┌────────┬──────────────────┬────────────┬──────┬──────┬──────────┐
+│ Fuel   │ Formula          │ Editable?  │ SOOT │ CO   │ HOC (E7) │
+├────────┼──────────────────┼────────────┼──────┼──────┼──────────┤
+│ Petrol │ ISO_OCTANE       │ ✓ YES      │ 0.08 │ 0.025│ 4.4      │
+│ Diesel │ C12H23           │ ✓ YES      │ 0.133│ 0.168│ 4.3      │
+│ CNG    │ METHANE          │ ✗ NO       │ 0.01 │ 0.01 │ 5.0      │
+│ LPG    │ PROPANE          │ ✗ NO       │ 0.024│ 0.015│ 4.6      │
+│ EVC    │ PROPANE (temp)   │ ✗ NO       │ 0.15 │ 0.20 │ 3.8      │
+└────────┴──────────────────┴────────────┴──────┴──────┴──────────┘
+
+┌───────────────────────────────────────────────────────────────────┐
+│ FDS VERSION COMPARISON                                            │
+└───────────────────────────────────────────────────────────────────┘
+
+┌────────────┬────────────────────────────────────────────────────┐
+│ FDS 6      │ • Modern format (RECOMMENDED)                      │
+│ (Default)  │ • Fuel-specific chemistry                          │
+│            │ • Accurate SOOT/CO modeling                        │
+│            │ • Uses selected fuel type                          │
+├────────────┼────────────────────────────────────────────────────┤
+│ FDS 5      │ • Legacy format                                    │
+│            │ • Generic POLYURETHANE/PROPANE                     │
+│            │ • Backward compatibility                           │
+│            │ • Ignores fuel type selection                      │
+└────────────┴────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────┐
+│ WORKFLOW                                                          │
+└───────────────────────────────────────────────────────────────────┘
+
+1. SELECT HRR VALUES
+   └─→ System auto-selects Petrol (<20MW) or Diesel (≥20MW)
+
+2. CHOOSE FUEL TYPE (optional override)
+   ├─→ Petrol: Editable properties
+   ├─→ Diesel: Editable properties
+   ├─→ CNG: Fixed properties
+   ├─→ LPG: Fixed properties
+   └─→ EVC: Fixed properties
+
+3. ADJUST PROPERTIES (if Petrol/Diesel)
+   ├─→ SOOT_YIELD: 0.000 - 1.000
+   ├─→ CO_YIELD: 0.000 - 1.000
+   └─→ HEAT_OF_COMBUSTION: 1.0E7 - 1.0E8 J/kg
+
+4. SELECT FDS VERSION
+   ├─→ FDS 6 (Recommended)
+   └─→ FDS 5 (Legacy)
+
+5. GENERATE FDS FILES
+   └─→ Files created with fuel-specific REAC namelist
+
+┌───────────────────────────────────────────────────────────────────┐
+│ EXAMPLE REAC NAMELISTS                                            │
+└───────────────────────────────────────────────────────────────────┘
+
+[Diesel - FDS6]
+&REAC ID='DIESEL',
+      FUEL='C12H23',
+      SOOT_YIELD=0.133,
+      CO_YIELD=0.168,
+      HEAT_OF_COMBUSTION=4.3E+07 /
+
+[Petrol - FDS6]
+&REAC ID='PETROL_CAR_FIRE',
+      FUEL='ISO_OCTANE',
+      SOOT_YIELD=0.080,
+      CO_YIELD=0.025,
+      HEAT_OF_COMBUSTION=4.4E+07 /
+
+[Legacy - FDS5]
+&REAC ID='POLYURETHANE',
+      FYI='Polyurethane, GM27',
+      FUEL='PROPANE',
+      SOOT_YIELD=0.10,
+      CO_YIELD=0.042 /
+
+┌───────────────────────────────────────────────────────────────────┐
+│ TIPS & BEST PRACTICES                                            │
+└───────────────────────────────────────────────────────────────────┘
+
+✓ Use default values unless you have experimental data
+✓ Let the system auto-select fuel based on HRR
+✓ Choose FDS6 for new projects
+✓ Document any custom property changes
+✓ Test with small scenarios first
+
+┌───────────────────────────────────────────────────────────────────┐
+│ TESTING                                                           │
+└───────────────────────────────────────────────────────────────────┘
+
+Run test script:
+  $ cd /home/ubuntu/qra_system_v2
+  $ python3 test_fuel_types.py
+
+Expected output:
+  ✅ FDS6 with Diesel (30MW)
+  ✅ FDS6 with Petrol (10MW)
+  ✅ FDS5 format
+
+╔═══════════════════════════════════════════════════════════════════╗
+║ For detailed documentation, see FUEL_TYPE_UPGRADE_GUIDE.md       ║
+╚═══════════════════════════════════════════════════════════════════╝
