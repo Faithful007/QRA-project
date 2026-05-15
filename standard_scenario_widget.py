@@ -239,11 +239,14 @@ class FireSizeWorkbookFactors:
         if vehicle_code == "PC":
             return self.vk_pc
         if vehicle_code == "BUS":
+            # Spreadsheet S30: Q30/TOT.VK.HRR020 = Q / (VK.HRR020*LFR.020 + VK.HRR030*(1-LFR.030))
             return self.total_vk_hrr(20)
         if vehicle_code == "GV":
+            # Spreadsheet S40: Q40/TOT.VK.HRR030 = Q / (VK.HRR030*LFR.030 + VK.HRR100*(1-LFR.100))
             return self.total_vk_hrr(30)
         if vehicle_code == "ST":
-            return self.total_vk_hrr(100)
+            # Spreadsheet S50: Q50/VK.HRR100 — uses raw VK.HRR100 (D47), NOT TOT.VK.HRR100
+            return self.vk_hrr.get(100, 0.0)
         return 0.0
 
     def not_serious_denominator(self, vehicle_code: str) -> float:
@@ -619,13 +622,13 @@ class EventTreeDiagram(QWidget):
             vk30_dn = vk30 * (1.0 - lfr30)
             freq_per_yr = ((vk20 / base) * acc + (gv_accr * vk30_dn / base)) * ft.probability
         elif vt.code == "GV" and ft.hrr_mw == 30 and base > 0.0:
-            # ACCR = C42 * LFR.030
-            acc = vt.accr * lfr30 * ft.probability
+            # ACCR = C42 * LFR.030  (spreadsheet F42 = C42*LFR.030, no extra probability)
+            acc = vt.accr * lfr30
             # Case/Yr = VK.HRR030/BASE*F42 + C52*vk.hrr100.dn/BASE
             # where F42 is ACCR at this node and vk.hrr100.dn = VK.HRR100*(1-LFR.100)
             st_accr = _vt_accr("ST")
             vk100_dn = vk100 * (1.0 - lfr100)
-            freq_per_yr = ((vk30 / base) * acc + (st_accr * vk100_dn / base)) * ft.probability
+            freq_per_yr = (vk30 / base) * acc + (st_accr * vk100_dn / base)
         elif vt.code == "ST" and ft.hrr_mw == 100 and base > 0.0:
             # ACCR = Hazardous cargo probability (0.15 default) * C52
             acc = vt.accr * ft.probability
@@ -1904,10 +1907,11 @@ class StandardScenarioWidget(QWidget):
                     vk30_dn = vk30 * (1.0 - lfr30)
                     total_fire_freq = ((vk20 / base) * ft_acc + (_vt_accr("GV") * vk30_dn / base)) * ft.probability
                 elif vt.code == "GV" and ft.hrr_mw == 30 and base > 0.0:
-                    # 30MW node formulas
-                    ft_acc = vt.accr * lfr30 * ft.probability
+                    # 30MW node: ft_acc = ACCR * LFR.030 (spreadsheet F42 = C42*LFR.030)
+                    ft_acc = vt.accr * lfr30
                     vk100_dn = vk100 * (1.0 - lfr100)
-                    total_fire_freq = ((vk30 / base) * ft_acc + (_vt_accr("ST") * vk100_dn / base)) * ft.probability
+                    # Case/Yr = VK.HRR030/BASE*F42 + C52*vk.hrr100.dn/BASE (spreadsheet F43)
+                    total_fire_freq = (vk30 / base) * ft_acc + (_vt_accr("ST") * vk100_dn / base)
                 elif vt.code == "ST" and ft.hrr_mw == 100 and base > 0.0:
                     # 100MW node formulas
                     ft_acc = vt.accr * ft.probability
@@ -1933,7 +1937,8 @@ class StandardScenarioWidget(QWidget):
                     br.probability = ft_acc * split
                     br.freq_per_yr = total_fire_freq * split
                     br.return_yr = _safe_return_year(br.freq_per_yr)
-                    # Spreadsheet: freq_veh_km = freq_per_yr / TOT.VK.HRRxxx
+                    # Spreadsheet: freq_veh_km = freq_per_yr / denominator
+                    # PC→VK.PC, BUS→TOT.VK.HRR020, GV→TOT.VK.HRR030, ST→VK.HRR100
                     br.freq_veh_km = (br.freq_per_yr / vk_denom) if vk_denom > 0.0 else 0.0
 
                     for ss in br.sub_scenarios:

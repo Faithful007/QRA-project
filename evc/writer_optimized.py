@@ -126,9 +126,28 @@ def _i(d: dict, key: str, default: int = 0) -> int:
 class TunnelContext:
     """Pre-computed tunnel-level data shared across ALL scenarios in a project.
 
-    Lines populated here: L03, L04, L05, L06, L07, L08, L09, L10–L16,
-    L24–L30, L38–L44, L45–L51, L66, L75, L76, L77, L80, L81, L82, L84,
-    L85, L87, L88. (This is most of the file.)
+    EVC file line mapping (VB EVC.exe format):
+      L03  length        — tunnel length (m)
+      L04  width         — roadway width = lane_width × num_lanes + 2 × shoulder
+      L05  gradient      — tunnel gradient/slope (%)
+      L06  cross_area    — cross-sectional area (m²)
+      L07  height        — tunnel height (m)
+      L08  num_lanes     — number of lanes
+      L09  abs_min_speed, abs_elderly_speed — absolute walk speeds (m/s)
+      L10–L16  vehicle counts per type
+      L24–L30  mix rates (%)
+      L38–L44  PCU factors
+      L45–L51  vehicle lengths (m)
+      L66  normal_traffic   — pcphpl (vehicles/hour/lane)
+      L75  air_velocity     — m/s
+      L76  fdb_dt           — FDB time step (s)
+      L77  fdb_monitor_x    — FDB monitor X (m)
+      L80  hesitation_time  — s
+      L81  leave_car_time   — s
+      L82  pre_move_time    — = hesitation - leave_car (s)
+      L85  (fdb_sim_interval, monitor_save, monitor_pt, monitor_save)
+      L87  (min_speed, elderly_speed, elderly_ratio) — sim walk factors
+      L88  lane_width, shoulder — geometric road parameters (m)
     """
     L: float
     num_lanes: int
@@ -142,8 +161,8 @@ class TunnelContext:
     min_speed: float
     elderly_speed: float
     elderly_ratio: float
-    lane_width: float
-    shoulder: float
+    lane_width: float      # L88[0]: lane width (m)
+    shoulder: float        # L88[1]: shoulder width (m)
     normal_traffic: float
     fdb_dt: float
     fdb_monitor_x: float
@@ -152,13 +171,22 @@ class TunnelContext:
     fdb_sim_interval: float
 
     # n_occ formula intermediates (used by scenario-level L74 calc)
-    n_occ_r74_float: float
+    n_occ_r74_float: float        # legacy formula base (kept for symmetric fallback)
+    sim_n_occ_r74:   float        # spacing-formula sim_n_occ (matches VB evacuee count)
     abs_ws_r74: float
 
-    # R74 saturation parameters
+    # R74 saturation parameters (SYMMETRIC placement legacy)
     hrr_ref: float
     hrr_sat_c: float
     hrr_sat_k: float
+
+    # R74 ASYMMETRIC-placement calibration (tunnel-invariant coefficients)
+    # n_eff = sim_n_occ × (A + B × (HRR-ref)/(HRR-ref+K))
+    # VB-calibrated against GUMOK 020/030/100 CFV0_P1 references.
+    is_asymmetric: bool
+    r74_mult_a_asym: float        # A: base multiplier        (default 3.9595)
+    r74_mult_b_asym: float        # B: saturation amplitude   (default 2.6299)
+    r74_sat_k_asym:  float        # K: saturation half-point  (default 53.014)
 
     # Static block of file bytes for L02–L59 (geometry + vehicle table)
     # This block is identical for every position file in the project.
@@ -178,12 +206,12 @@ def build_tunnel_context(params: dict) -> TunnelContext:
     tr = params.get("traffic", {})
 
     L           = _f(tn, "length",     0.0)
-    gradient    = _f(tn, "gradient",  -0.1)
-    cross_area  = _f(tn, "cross_area", 54.11)
-    height      = _f(tn, "height",     5.9)
-    num_lanes   = _i(tn, "num_lanes",  2)
-    lane_width  = _f(tn, "lane_width", 3.25)
-    shoulder    = _f(tn, "shoulder",   1.0)
+    gradient    = _f(tn, "gradient",  -0.1)   # L05: tunnel gradient/slope (%)
+    cross_area  = _f(tn, "cross_area", 54.11) # L06: cross-sectional area (m²)
+    height      = _f(tn, "height",     5.9)   # L07: tunnel height (m)
+    num_lanes   = _i(tn, "num_lanes",  2)     # L08
+    lane_width  = _f(tn, "lane_width", 3.25)  # L88[0]: lane width (m)
+    shoulder    = _f(tn, "shoulder",   1.0)   # L88[1]: shoulder width (m)
 
     _rw = _f(tn, "road_width", 0.0)
     width = _rw if _rw > 0 else round(lane_width * num_lanes + 2.0 * shoulder, 3)
@@ -202,34 +230,54 @@ def build_tunnel_context(params: dict) -> TunnelContext:
     mix_rates   = [_tvt("mix_rate",     c) for c in range(VT)]
     pcu_vals    = [_tvt("pcu",          c, 1.0) for c in range(VT)]
     veh_lengths = [_tvt("veh_length",   c) for c in range(VT)]
+    occ_vals    = [_tvt("occupants",    c) for c in range(VT)]
 
     abs_min_speed     = _f(sm, "abs_min_speed",     0.50)
     abs_elderly_speed = _f(sm, "abs_elderly_speed", 0.50)
 
     # ── Pre-build static lines L02–L59 as bytes ──
+    # Line semantics (per VB EVC.exe file format):
+    #   L02: header  "-1  0"
+    #   L03: tunnel length (m)
+    #   L04: roadway width (m) = lane_width × num_lanes + 2 × shoulder
+    #   L05: gradient / slope (%)
+    #   L06: cross-sectional area (m²)
+    #   L07: tunnel height (m)
+    #   L08: number of lanes
+    #   L09: absolute walk speeds (m/s) — used by L74 budget formula
+    #   L10–L16: vehicle counts per type (7 types)
+    #   L17–L23: reserved (zeros)
+    #   L24–L30: mix rates per type (% of total flow)
+    #   L31–L37: reserved (zeros)
+    #   L38–L44: PCU factors per type
+    #   L45–L51: vehicle lengths (m)
+    #   L52–L58: occupants per vehicle type
+    #   L59: trailing  " 1 "
+    # L88 (written later): lane_width (m), shoulder (m) — geometric road params.
     parts: list[bytes] = []
     parts.append(_BYTES_L02)                                              # L02
-    parts.append(f" {_g(L)} ".encode("ascii"))                            # L03
-    parts.append(f" {_g(width)} ".encode("ascii"))                        # L04
-    parts.append(f" {_g(gradient)} ".encode("ascii"))                     # L05
-    parts.append(f" {_g(cross_area)} ".encode("ascii"))                   # L06
-    parts.append(f" {_g(height)} ".encode("ascii"))                       # L07
-    parts.append(f" {num_lanes} ".encode("ascii"))                        # L08
-    parts.append(_col14([abs_min_speed, abs_elderly_speed]).encode("ascii"))  # L09
-    for v in veh_counts:                                                  # L10–L16
+    parts.append(f" {_g(L)} ".encode("ascii"))                            # L03: tunnel length
+    parts.append(f" {_g(width)} ".encode("ascii"))                        # L04: roadway width
+    parts.append(f" {_g(gradient)} ".encode("ascii"))                     # L05: gradient/slope (%)
+    parts.append(f" {_g(cross_area)} ".encode("ascii"))                   # L06: cross-section area (m²)
+    parts.append(f" {_g(height)} ".encode("ascii"))                       # L07: tunnel height (m)
+    parts.append(f" {num_lanes} ".encode("ascii"))                        # L08: number of lanes
+    parts.append(_col14([abs_min_speed, abs_elderly_speed]).encode("ascii"))  # L09: abs walk speeds (m/s)
+    for v in veh_counts:                                                  # L10–L16: vehicle counts
         parts.append(f" {int(v)} ".encode("ascii"))
-    parts.append(_BYTES_L17_TO_L23)                                       # L17–L23 (block)
-    for m in mix_rates:                                                   # L24–L30
+    parts.append(_BYTES_L17_TO_L23)                                       # L17–L23 (reserved)
+    for m in mix_rates:                                                   # L24–L30: mix rates (%)
         parts.append(f" {_g(m)} ".encode("ascii"))
-    parts.append(_BYTES_L31_TO_L37)                                       # L31–L37
-    for v in pcu_vals:                                                    # L38–L44
+    parts.append(_BYTES_L31_TO_L37)                                       # L31–L37 (reserved)
+    for v in pcu_vals:                                                    # L38–L44: PCU factors
         parts.append(f" {_g(v)} ".encode("ascii"))
     for v in veh_lengths:                                                 # L45–L51
         parts.append(f" {_g(v)} ".encode("ascii"))
     parts.append(_BYTES_L52_TO_L59)                                       # L52–L59
     static_lines_2_to_59 = b"\n".join(parts)
 
-    # n_occ formula intermediates
+    # ── n_occ formula intermediates ──
+    # LEGACY formula (kept for symmetric-placement fallback)
     _t_react_r74 = 165
     _pcphpl_r74     = _f(tr, "normal_traffic", 2000.0)
     _r74_pcpkpl     = _f(sm, "r74_pcpkpl",     216.0)
@@ -240,6 +288,38 @@ def build_tunnel_context(params: dict) -> TunnelContext:
     _n_total_per_dir = _n_enter_per_dir + _n_cong_per_dir
     n_occ_r74_float  = _n_total_per_dir * _r74_dir_mult * _r74_occ_per_veh
     abs_ws_r74 = abs_min_speed if abs_min_speed > 0 else 0.5
+
+    # SPACING formula (PRIMARY path — matches VB EVCEngine.total_occupants_vb).
+    # Mix-weighted vehicle length (Clavg) and avg occupants per vehicle, then:
+    #   pcpkpl_jam = 1000 / (Clavg + LTH)            (jam density, veh/km/lane)
+    #   sim_n_occ  = pcpkpl_jam × N_lanes × L_km × avg_occ
+    #
+    # NOTES:
+    # - occ_vals uses the MIX TABLE values (= L52-L58 in EVC file = vehicle
+    #   CAPACITY [3, 8, 30, 2, 2, 1, 1]), NOT the lower evac-table averages.
+    #   This is the VB convention for L74 evacuation budget.
+    # - L (full tunnel length) is used regardless of NORMAL or CONGEST.
+    #   VB writes the SAME L74 for both traffic scenarios because L74 is a
+    #   tunnel CAPACITY-based time budget, not actual-occupancy-based.
+    _lth_r74 = _f(sm, "r74_lth", 2.33)
+    _mix_sum = sum(mix_rates)
+    sim_n_occ_r74 = 0.0
+    if _mix_sum > 0 and any(veh_lengths) and any(occ_vals):
+        _clavg   = sum((m / _mix_sum) * vl for m, vl in zip(mix_rates, veh_lengths))
+        _avg_occ = sum((m / _mix_sum) * o  for m, o  in zip(mix_rates, occ_vals))
+        _slot    = _clavg + _lth_r74
+        if _slot > 0:
+            _pcpkpl_jam = 1000.0 / _slot
+            sim_n_occ_r74 = _pcpkpl_jam * num_lanes * (L / 1000.0) * _avg_occ
+    if sim_n_occ_r74 <= 0:
+        # Fallback when mix data missing — scale legacy back to sim count.
+        # (only used if user has incomplete vehicle table)
+        sim_n_occ_r74 = n_occ_r74_float / 3.9595
+
+    # Fire placement scheme detection.
+    # Stored as bool here so scenario_context can pick the right formula.
+    # Default: ASYMMETRIC (matches GUI default and VB calibration).
+    _is_asymmetric_r74 = bool(sm.get("r74_is_asymmetric", True))
 
     return TunnelContext(
         L                = L,
@@ -263,10 +343,15 @@ def build_tunnel_context(params: dict) -> TunnelContext:
         monitor_save     = _f(hr, "monitor_save",  10.0),
         fdb_sim_interval = _f(hr, "sim_interval",   2.0),
         n_occ_r74_float  = n_occ_r74_float,
+        sim_n_occ_r74    = sim_n_occ_r74,
         abs_ws_r74       = abs_ws_r74,
         hrr_ref          = _f(sm, "r74_hrr_ref",    15.0),
         hrr_sat_c        = _f(sm, "r74_hrr_sat_c", 1082.47),
         hrr_sat_k        = _f(sm, "r74_hrr_sat_k",   14.45),
+        is_asymmetric    = _is_asymmetric_r74,
+        r74_mult_a_asym  = _f(sm, "r74_mult_a_asym",   3.9595),
+        r74_mult_b_asym  = _f(sm, "r74_mult_b_asym",   2.6299),
+        r74_sat_k_asym   = _f(sm, "r74_hrr_sat_k_asym", 53.014),
         static_lines_2_to_59 = static_lines_2_to_59,
     )
 
@@ -341,12 +426,31 @@ def build_scenario_context(tctx: TunnelContext, chid: str,
             fdb_time_ext = _f(mb, "slf_tmax",       600.0)
             sim_end_time = (int(fdb_time_ext / 5) * 5) - int(tctx.hesitation_time)
 
-    # HRR-scaled n_occ (matches writer_current.py formula exactly)
-    n_occ_scaled = tctx.n_occ_r74_float
-    if design_mw > tctx.hrr_ref:
-        delta = design_mw - tctx.hrr_ref
-        extra = tctx.hrr_sat_c * delta / (delta + tctx.hrr_sat_k)
-        n_occ_scaled = tctx.n_occ_r74_float + extra
+    # ── L74 (extended_time) — TUNNEL-INVARIANT CALIBRATION ──
+    #
+    # ASYMMETRIC placement (VB-calibrated, tunnel-invariant coefficients):
+    #   n_eff = sim_n_occ × (A + B × (HRR-ref)/(HRR-ref+K))
+    #     A = 3.9595, B = 2.6299, K = 53.014, ref = 15 MW
+    #
+    # SYMMETRIC placement (legacy fallback):
+    #   n_eff = legacy_n_occ_formula + C × frac
+    #     C = 1082.47, K = 14.45, ref = 15 MW
+    #
+    # Both produce VB-exact L74 for their respective placement schemes.
+    if tctx.is_asymmetric:
+        # ASYMMETRIC: sim_n_occ × multiplier(HRR)
+        mult = tctx.r74_mult_a_asym
+        if design_mw > tctx.hrr_ref:
+            delta = design_mw - tctx.hrr_ref
+            mult += tctx.r74_mult_b_asym * delta / (delta + tctx.r74_sat_k_asym)
+        n_occ_scaled = tctx.sim_n_occ_r74 * mult
+    else:
+        # SYMMETRIC (legacy): n_occ_r74_float + C × frac
+        n_occ_scaled = tctx.n_occ_r74_float
+        if design_mw > tctx.hrr_ref:
+            delta = design_mw - tctx.hrr_ref
+            extra = tctx.hrr_sat_c * delta / (delta + tctx.hrr_sat_k)
+            n_occ_scaled = tctx.n_occ_r74_float + extra
 
     extended_time_constant = int(
         n_occ_scaled * tctx.L / (tctx.abs_ws_r74 * 200.0) + fdb_time_ext
@@ -443,7 +547,19 @@ def write_evc_for_position(
                      else sctx.extended_time_constant)
     line_74 = f" {extended_time} ".encode("ascii")
 
-    # ── Lines L75–L88 (mostly tunnel-level; build inline) ──
+    # ── Lines L75–L88 (tunnel-level; build inline) ──
+    # Line semantics (per VB EVC.exe file format):
+    #   L75: air velocity (m/s)
+    #   L76: FDB dt (s)
+    #   L77: FDB monitor X (m) — typically tunnel end
+    #   L78: evacuation offset (s)
+    #   L80: hesitation time (s)
+    #   L81: leave-car time (s)
+    #   L82: pre-movement = hesitation - leave_car (s)
+    #   L84: MDB column indices (6 zeros by default)
+    #   L85: (sim_interval, monitor_save, monitor_pt, monitor_save)
+    #   L87: simulation walk-speed factors (min, elderly, elderly_ratio)
+    #   L88: lane_width (m), shoulder (m) — geometric road parameters
     line_75 = f" {_g(tctx.air_velocity)} ".encode("ascii")
     line_76 = f" {_g(tctx.fdb_dt)} ".encode("ascii")
     line_77 = f" {_g(tctx.fdb_monitor_x)} ".encode("ascii")
@@ -455,6 +571,7 @@ def write_evc_for_position(
     line_85 = _col14([int(tctx.fdb_sim_interval), int(tctx.monitor_save),
                       int(tctx.monitor_pt), int(tctx.monitor_save)]).encode("ascii")
     line_87 = _col14([tctx.min_speed, tctx.elderly_speed, tctx.elderly_ratio]).encode("ascii")
+    # L88: lane_width and shoulder (geometric road parameters, in meters)
     line_88 = _col14([tctx.lane_width, tctx.shoulder]).encode("ascii")
 
     # ── Assemble ──

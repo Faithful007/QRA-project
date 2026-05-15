@@ -16,7 +16,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QBrush
@@ -32,6 +32,9 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QInputDialog,
     QLineEdit,
+    QColorDialog,
+    QMenu,
+    QAction,
 )
 
 
@@ -284,6 +287,20 @@ class TunnelTrafficWidget(QWidget):
         self.reset_override_button.clicked.connect(self._reset_formula_overrides)
         button_layout.addWidget(self.reset_override_button)
         
+        # Cell color button
+        self.color_button = QPushButton("🎨 Cell Color")
+        self.color_button.setMaximumWidth(120)
+        self.color_button.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; padding: 5px;")
+        self.color_button.clicked.connect(self._change_cell_color)
+        button_layout.addWidget(self.color_button)
+
+        # Clear color button
+        self.clear_color_button = QPushButton("✕ Clear Color")
+        self.clear_color_button.setMaximumWidth(110)
+        self.clear_color_button.setStyleSheet("background-color: #7f8c8d; color: white; font-weight: bold; padding: 5px;")
+        self.clear_color_button.clicked.connect(self._clear_cell_color)
+        button_layout.addWidget(self.clear_color_button)
+
         button_layout.addStretch()
         
         # Save button
@@ -333,7 +350,7 @@ class TunnelTrafficWidget(QWidget):
         
         # Set selection behavior
         self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.currentCellChanged.connect(self._on_current_cell_changed)
 
@@ -341,10 +358,14 @@ class TunnelTrafficWidget(QWidget):
         _original_kpe = self.table.keyPressEvent
         def _table_key_press(event, _orig=_original_kpe):
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-                self._delete_selected_cell()
+                self._delete_selected_cells()
             else:
                 _orig(event)
         self.table.keyPressEvent = _table_key_press
+
+        # Right-click context menu
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
 
         layout.addWidget(self.table)
     
@@ -803,50 +824,154 @@ class TunnelTrafficWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Reset Error", f"Failed to reset overrides:\n\n{e}")
 
-    # ── Cell deletion ─────────────────────────────────────────────────────
+    # ── Cell color ─────────────────────────────────────────────────────────
 
-    def _delete_selected_cell(self):
-        """Clear the selected cell.  White/blue cells need no password;
-        any other cell requires the admin password."""
+    def _show_table_context_menu(self, pos):
+        """Show right-click context menu on the table."""
+        menu = QMenu(self)
+        color_action = QAction("🎨 Change Cell Color", self)
+        color_action.triggered.connect(self._change_cell_color)
+        menu.addAction(color_action)
+
+        clear_action = QAction("✕ Clear Cell Color", self)
+        clear_action.triggered.connect(self._clear_cell_color)
+        menu.addAction(clear_action)
+
+        menu.addSeparator()
+
+        delete_action = QAction("✕ Delete Cell Content", self)
+        delete_action.triggered.connect(self._delete_selected_cells)
+        menu.addAction(delete_action)
+
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _auto_text_color(bg: QColor) -> QColor:
+        """Return black or white foreground for best contrast against *bg*."""
+        luminance = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+        return QColor(0, 0, 0) if luminance > 128 else QColor(255, 255, 255)
+
+    def _apply_color_to_items(self, color: Optional[QColor]):
+        """Apply *color* (or reset to white if None) to all selected cells."""
         items = self.table.selectedItems()
         if not items:
             return
-        item = items[0]
-        coord = self._coord_from_row_col(item.row(), item.column())
-        cell = self.cells_by_coord.get(coord)
 
-        is_editable_cell = cell.get('is_editable', False) if cell else False
-        cell_color = cell.get('color') if cell else None
-        has_formula = (
-            isinstance(cell.get('formula'), str) and cell['formula'].startswith('=')
-            if cell else False
+        if color is not None:
+            hex_key = f"FF{color.red():02X}{color.green():02X}{color.blue():02X}"
+            fg = self._auto_text_color(color)
+        else:
+            hex_key = None
+            fg = QColor(0, 0, 0)
+
+        self._updating_table = True
+        try:
+            for item in items:
+                coord = self._coord_from_row_col(item.row(), item.column())
+                if color is not None:
+                    item.setBackground(QBrush(color))
+                else:
+                    item.setBackground(QBrush(QColor(255, 255, 255)))
+                item.setForeground(QBrush(fg))
+
+                # Persist into the data model
+                cell = self.cells_by_coord.get(coord)
+                if cell is not None:
+                    cell['color'] = hex_key
+                    # Update editability: colored cells are protected unless admin
+                    is_editable = cell.get('is_editable', False)
+                    is_colored = hex_key is not None
+                    if is_editable or (not is_colored) or (is_colored and self._admin_mode):
+                        item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    else:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        finally:
+            self._updating_table = False
+
+    def _change_cell_color(self):
+        """Open a color picker and apply the chosen color to all selected cells."""
+        if not self.table.selectedItems():
+            QMessageBox.information(self, "No Selection", "Select one or more cells first.")
+            return
+
+        # Use the current cell's background as the initial color
+        current = self.table.currentItem()
+        initial = current.background().color() if current else QColor(255, 255, 255)
+
+        color = QColorDialog.getColor(
+            initial, self, "Choose Cell Background Color",
+            QColorDialog.ShowAlphaChannel,
         )
-        is_white_no_formula = (cell_color is None and not has_formula)
+        if not color.isValid():
+            return
+        # Ignore the alpha channel — use fully opaque
+        color.setAlpha(255)
+        self._apply_color_to_items(color)
 
-        # Freely-editable cells (blue or white-without-formula): no password
-        if is_editable_cell or is_white_no_formula:
-            self._clear_cell(coord, item)
+    def _clear_cell_color(self):
+        """Remove the background color from all selected cells (reset to white)."""
+        if not self.table.selectedItems():
+            QMessageBox.information(self, "No Selection", "Select one or more cells first.")
+            return
+        self._apply_color_to_items(None)
+
+    # ── Cell deletion ─────────────────────────────────────────────────────
+
+    def _delete_selected_cells(self):
+        """Clear all selected cells (supports range / multi-selection).
+
+        Free cells (blue or white-without-formula) are cleared immediately.
+        Protected cells require admin mode or a password prompt (asked once
+        for the whole batch).
+        """
+        items = self.table.selectedItems()
+        if not items:
             return
 
-        # Already in admin mode — clear immediately
-        if self._admin_mode:
+        free_items: List[Tuple[str, QTableWidgetItem]] = []
+        protected_items: List[Tuple[str, QTableWidgetItem]] = []
+
+        for item in items:
+            coord = self._coord_from_row_col(item.row(), item.column())
+            cell = self.cells_by_coord.get(coord)
+            is_editable_cell = cell.get('is_editable', False) if cell else False
+            cell_color = cell.get('color') if cell else None
+            has_formula = (
+                isinstance(cell.get('formula'), str) and cell['formula'].startswith('=')
+                if cell else False
+            )
+            is_white_no_formula = (cell_color is None and not has_formula)
+
+            if is_editable_cell or is_white_no_formula or self._admin_mode:
+                free_items.append((coord, item))
+            else:
+                protected_items.append((coord, item))
+
+        # Clear free items right away
+        for coord, item in free_items:
             self._clear_cell(coord, item)
+
+        if not protected_items:
             return
 
-        # Protected cell — ask for password once
+        # Ask for password once for all protected cells
+        coords_label = ", ".join(c for c, _ in protected_items[:5])
+        if len(protected_items) > 5:
+            coords_label += f" … (+{len(protected_items) - 5} more)"
         password, ok = QInputDialog.getText(
             self,
             "Password Required",
-            f"Enter admin password to delete cell {coord}:",
+            f"Enter admin password to delete protected cell(s):\n{coords_label}",
             QLineEdit.Password,
         )
         if not ok:
             return
         if password == self._admin_password:
-            self._clear_cell(coord, item)
+            for coord, item in protected_items:
+                self._clear_cell(coord, item)
         else:
             QMessageBox.warning(self, "Incorrect Password",
-                                "✗ Incorrect password — cell not deleted.")
+                                "✗ Incorrect password — protected cells not deleted.")
 
     def _clear_cell(self, coord: str, item: QTableWidgetItem):
         """Wipe the value/formula stored for *coord* and blank the table cell."""
@@ -1351,6 +1476,23 @@ class TunnelTrafficWidget(QWidget):
                                     cell['manual_override'] = True
                                 self.cells_by_coord[cell['coordinate']] = cell
                                 changes_made = True
+
+            # Persist color changes for every cell regardless of editability
+            for cell in cells:
+                row = cell['row'] - 1
+                col = cell['col'] - 1
+                if 0 <= row < self.table.rowCount() and 0 <= col < self.table.columnCount():
+                    item = self.table.item(row, col)
+                    if item is not None:
+                        bg = item.background().color()
+                        if bg.isValid() and bg != QColor(255, 255, 255):
+                            new_hex = f"FF{bg.red():02X}{bg.green():02X}{bg.blue():02X}"
+                        else:
+                            new_hex = None
+                        if cell.get('color') != new_hex:
+                            cell['color'] = new_hex
+                            self.cells_by_coord[cell['coordinate']] = cell
+                            changes_made = True
             
             # Write back to JSON file
             json_data_str = json.dumps(self.sheet_data, ensure_ascii=False, indent=2)
