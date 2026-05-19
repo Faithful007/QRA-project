@@ -428,8 +428,8 @@ class FNCurveSubTabWidget(QWidget):
 
         # ── Second control row: HSE criterion lines (slope -1 per decade) ───
         # Standard UK HSE societal-risk criteria are F = C / N, anchored at N=1:
-        #   HSE High Level (intolerable threshold):     C = 1e-2
-        #   HSE Low Level  (broadly acceptable line):   C = 1e-4
+        #   HSE High Level (intolerable threshold):     C = 1e-3
+        #   HSE Low Level  (broadly acceptable line):   C = 1e-5
         # The user can override the anchors below.
         hse_ctrl = QHBoxLayout()
         hse_ctrl.setSpacing(6)
@@ -437,7 +437,7 @@ class FNCurveSubTabWidget(QWidget):
         self._hse_high = QDoubleSpinBox()
         self._hse_high.setRange(1e-12, 1.0)
         self._hse_high.setDecimals(10)
-        self._hse_high.setValue(1e-2)
+        self._hse_high.setValue(1e-3)
         self._hse_high.setFixedWidth(110)
         self._hse_high.setToolTip(
             "Anchor of the HSE High-Level (intolerable) criterion at N=1.\n"
@@ -449,7 +449,7 @@ class FNCurveSubTabWidget(QWidget):
         self._hse_low = QDoubleSpinBox()
         self._hse_low.setRange(1e-12, 1.0)
         self._hse_low.setDecimals(10)
-        self._hse_low.setValue(1e-4)
+        self._hse_low.setValue(1e-5)
         self._hse_low.setFixedWidth(110)
         self._hse_low.setToolTip(
             "Anchor of the HSE Low-Level (broadly acceptable) criterion at N=1.\n"
