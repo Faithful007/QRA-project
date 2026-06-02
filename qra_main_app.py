@@ -53,6 +53,15 @@ import sys
 import os
 from pathlib import Path
 
+# FED / EQ_Fatal model reconstructed from the VB engine (QRA_Road_20220116.exe).
+# Provides the linear, time-integrated FED model (no exp/probit) with empirically
+# fitted coefficients. See evc/fed_eqfatal_model.py for the full provenance and the
+# +/-10-15% approximation caveat.
+try:
+    from evc import fed_eqfatal_model as _fedmodel
+except Exception:
+    _fedmodel = None
+
 # Ensure database module is importable
 app_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(app_dir))
@@ -191,6 +200,75 @@ def get_evc_generator():
             print(f"Error importing EVC generator: {e}")
             return None, None, None
     return EVCGenerator, EVCParams, params_from_qra_dict
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fire position + RP weights helper
+# Source: 터널교통량등제원, row 73, cols F:R
+# ─────────────────────────────────────────────────────────────────────────────
+def tunnel_fire_positions_and_rp(
+    tunnel_length_m: float,
+    exit_position_m: float,
+    excluded_end_region_m: float = 25.0,
+    num_fire_points: int = 6,
+) -> dict:
+    """
+    Reproduces the Excel logic from:
+    터널교통량등제원!D73:R73
+
+    Parameters
+    ----------
+    tunnel_length_m : float
+        Total tunnel length [m]
+    exit_position_m : float
+        End position of usable tunnel section [m] (D73 equivalent)
+    excluded_end_region_m : float
+        Region excluded from fire placement near the end [m]
+        (ranEVCFire in workbook, default 25 m)
+    num_fire_points : int
+        Number of fire locations (default 6)
+
+    Returns
+    -------
+    dict
+        {
+            "spacing_m": float,
+            "fire_positions_m": [...],
+            "rp_percent": [...]
+        }
+    """
+    usable_length = exit_position_m - excluded_end_region_m
+    spacing = usable_length / num_fire_points
+
+    fire_positions = [
+        spacing / 2 + i * spacing
+        for i in range(num_fire_points)
+    ]
+
+    rp_values = []
+    for i in range(num_fire_points):
+        if i == 0:
+            rp_length = (
+                fire_positions[i]
+                + (fire_positions[i + 1] - fire_positions[i]) / 2
+            )
+        elif i == num_fire_points - 1:
+            rp_length = (
+                (fire_positions[i] - fire_positions[i - 1]) / 2
+                + (tunnel_length_m - fire_positions[i])
+            )
+        else:
+            rp_length = (
+                (fire_positions[i] - fire_positions[i - 1]) / 2
+                + (fire_positions[i + 1] - fire_positions[i]) / 2
+            )
+        rp_values.append(round((rp_length / tunnel_length_m) * 100, 1))
+
+    return {
+        "spacing_m": round(spacing, 1),
+        "fire_positions_m": [round(p, 1) for p in fire_positions],
+        "rp_percent": rp_values,
+    }
 
 
 class FDSSimulationThread(QThread):
@@ -4866,10 +4944,10 @@ class QRAMainWindow(QMainWindow):
 
         def _on_fp_mode_changed(_id):
             self.evc_estimate_fp_btn.setEnabled(True)
-            if _id == 1:   # asymmetric — fix count to 6
+            if _id == 0:   # symmetric — formula always uses 6 fire points
                 self.evc_num_fp_s4.setValue(6)
                 self.evc_num_fp_s4.setEnabled(False)
-            else:
+            else:          # asymmetric — user can set fire-points-per-zone freely
                 self.evc_num_fp_s4.setEnabled(True)
             # Immediately push the matching RP weights to the Results tab
             self._apply_rp_for_mode(is_asymmetric=(_id == 1))
@@ -5819,6 +5897,64 @@ class QRAMainWindow(QMainWindow):
     # ── Batch run cancel flag ─────────────────────────────────────────────────
     _batch_evc_cancel_flag = False
 
+    def _fallback_fed_via_model(self, pos, fx, tunnel_len, ev_times, rng):
+        """Compute per-occupant FED in the no-FDB fallback using the
+        reconstructed VB-engine model (fed_eqfatal_model).
+
+        The VB engine's FED is linear and time-integrated. Here we lack a real
+        FDB field, so we build each occupant's 7 CCN exposure channels from a
+        smoke-density proxy that decays with distance from the fire, scaled to
+        the channel magnitudes seen in the real SET files, then apply the
+        fitted coefficients. Channels use the depletion / above-ambient
+        convention (zero at ambient) so occupants in clean air get FED = 0.
+
+        Exposure time is the portion of each occupant's evacuation spent in
+        smoke, not their full travel time, so distant occupants don't
+        accumulate spurious dose.
+
+        Returns an (n_occ,) array of total FED.
+        """
+        import numpy as _np
+        pos = _np.asarray(pos, dtype=float)
+        ev_times = _np.asarray(ev_times, dtype=float)
+        n = pos.shape[0]
+
+        # Smoke-density proxy: 1.0 at the fire, decaying with distance.
+        decay_len = max(tunnel_len * 0.12, 1.0)
+        smoke = _np.exp(-_np.abs(pos - fx) / decay_len)        # in [0,1]
+
+        # Build the (n,7) CCN matrix in depletion / above-ambient form
+        # (each channel 0 at ambient, scaled by local smoke density):
+        #   CCN1 = temp-above-ambient   CCN2 = CO2 %      CCN3 = CO ppm
+        #   CCN4 = O2 depletion         CCN5 = radiation  CCN6 = 0
+        #   CCN7 = secondary heat
+        # Peak (fully-smoke-logged) channel values from the real SET files,
+        # already expressed in the depletion/above-ambient convention:
+        ref = (16.0, 0.21, 250.0, 1.5, 4.2, 0.0, 210.0)
+        ccn = _np.zeros((n, 7), dtype=float)
+        for j in range(7):
+            ccn[:, j] = ref[j] * smoke
+
+        # Exposure time in smoke (minutes): occupants close to the fire are in
+        # smoke for most of their evacuation; distant occupants barely at all.
+        t_min = _np.clip(ev_times / 60.0, 0.0, None) * smoke
+
+        if _fedmodel is not None:
+            fed_total, _ = _fedmodel.fed_from_ccn_array(ccn, t_min)
+            return _np.asarray(fed_total, dtype=float)
+
+        # Defensive inline fallback if the model module failed to import:
+        # dominant CO + heat terms only (FED1, FED4 depletion-form coeffs).
+        c_co   = _np.array([1.446100e-03, 5.558500e-02, 3.584200e-03,
+                           -3.955100e-08, -1.599300e-06, 3.411200e-01,
+                           -4.260700e-03])
+        c_heat = _np.array([4.509800e-04, 2.562200e-02, 1.219000e-03,
+                           -1.158500e-08, -5.023400e-07, 6.856000e-03,
+                           -1.436800e-03])
+        fed = _np.maximum((ccn @ c_co) * t_min, 0.0) \
+            + _np.maximum((ccn @ c_heat) * t_min, 0.0)
+        return fed
+
     def _batch_run_evc_simulation(self):
         """Batch Run — run N Monte Carlo iterations per loaded EVC/FDB pair,
         fill Results grid, auto-save to project SQLite DB.
@@ -6126,14 +6262,29 @@ class QRAMainWindow(QMainWindow):
                     ev_times  = pre_move + np.abs(pos-occ_exits)/spd
                     # PATCH 3: EV Time from simulation end
                     ev_time   = float(np.max(ev_times))  # final timestep when termination triggered
-                    dose_f    = np.exp(-np.abs(pos-fx) / max(tunnel_len*0.12, 1.0))
-                    fed_val   = (8e-7*5000*dose_f*ev_times
-                                 + 5e-8*5000*dose_f*ev_times
-                                 + 1e-8*5000*dose_f*ev_times
-                                 + rng.uniform(0,0.04,n_occ))
+
+                    # ── FED via reconstructed VB-engine model ───────────────
+                    # The VB engine (QRA_Road_20220116.exe) computes FED as a
+                    # LINEAR, time-integrated dose (no exp/probit). We replace the
+                    # former np.exp() dose proxy with that model, applied through
+                    # the empirically-fitted coefficients in fed_eqfatal_model.
+                    #
+                    # In this fallback path there is no FDB trajectory, so we
+                    # synthesise the 7 CCN exposure channels from a smoke-decay
+                    # proxy scaled to the channel magnitudes observed in the real
+                    # SET files, then feed them through the fitted model. When a
+                    # real .evc/.FDB run is available the EVCEngine branch above
+                    # supplies true per-occupant FED instead.
+                    fed_val = self._fallback_fed_via_model(
+                        pos, fx, tunnel_len, ev_times, rng)
                     f_cnt = [int(np.sum(fed_val >= th))
                              for th in [.1,.2,.3,.4,.5,.6,.7,.8,.9,1.0]]
-                    eq_f  = float(np.sum(np.clip(fed_val,0,2)*(fed_val>=0.5))*0.6)
+                    # EQ_Fatal = expected-fatality sum over occupants (clipped at
+                    # 1.0 each). Linear model => no floating-point "ghost" values:
+                    # a no-exposure scenario yields exactly 0, so Risk Index is 0.
+                    eq_f  = float(np.sum(np.clip(fed_val, 0.0, 1.0)))
+                    if eq_f < 1e-9:
+                        eq_f = 0.0
                     run_data.append(dict(run_no=_runi, ev_time=ev_time,
                                          evacuees=n_occ, fed=f_cnt, eq_fatal=eq_f,
                                          upstream_failed=0))  # not available in fallback
@@ -7011,21 +7162,63 @@ class QRAMainWindow(QMainWindow):
     #     tbl.setFixedHeight(22 * vis + tbl.horizontalHeader().height() + 4)
 
     # ── public entry-point wired to the button ────────────────────────────────
+    def _get_asym_exit_position_m(self) -> float:
+        """Return the exit-connection position (m) for asymmetric fire placement.
+
+        Reads the first 'exit' row from evc_fireloc_table (col 1 = position).
+        Falls back to 77.5 % of tunnel length when no exit row is available,
+        which reproduces the original hardcoded asymmetric formula.
+        """
+        tl_m = 0.0
+        try:
+            tl_m = float(self.evc_tunnel_length.value())
+        except Exception:
+            pass
+        tbl = getattr(self, "evc_fireloc_table", None)
+        if tbl is not None:
+            last = tbl.rowCount() - 1
+            for ri in range(last):
+                name_itm = tbl.item(ri, 0)
+                if name_itm and name_itm.text().strip().lower() == "exit":
+                    pos_itm = tbl.item(ri, 1)
+                    if pos_itm:
+                        try:
+                            ep = float(pos_itm.text().strip())
+                            if ep > 0:
+                                return ep
+                        except ValueError:
+                            pass
+        return tl_m * 0.775   # fallback: original 77.5 % rule
+
     def _apply_rp_for_mode(self, is_asymmetric: bool):
         """Update the Results-tab RP(1..6) spinboxes to match the fire placement mode.
 
-        Asymmetric (6 fixed points):
-            RP1–RP5  = 0.775 / 5  = 0.1550   (each section covers 15.5 % of TL)
-            RP6      = 1 – 5×0.155 = 0.2250   (tail section covers 22.5 % of TL)
+        Asymmetric:
+            Uses tunnel_fire_positions_and_rp() with exit_position_m from the
+            fire-location table (D73 equivalent).  Falls back to the original
+            hardcoded 77.5 %/22.5 % split when tunnel geometry is not available.
 
         Symmetric (N equal points):
-            RP1–RP6  = 1 / 6      ≈ 0.1667   (equal weight per fire position)
+            RP1–RP6 = 1/6 ≈ 0.1667  (equal weight per fire position)
         """
         if not hasattr(self, "t6_rp_inputs") or len(self.t6_rp_inputs) < 6:
             return
         if is_asymmetric:
-            weights = [round(0.775 / 5, 4)] * 5 + [round(1.0 - 5 * (0.775 / 5), 4)]
+            # Asymmetric mode: position-based RP from tunnel_fire_positions_and_rp
+            tl_m = 0.0
+            try:
+                tl_m = float(self.evc_tunnel_length.value())
+            except Exception:
+                pass
+            exit_pos = self._get_asym_exit_position_m()
+            if tl_m > 0 and exit_pos > 0:
+                result = tunnel_fire_positions_and_rp(tl_m, exit_pos, num_fire_points=len(self.t6_rp_inputs))
+                weights = [round(rp / 100, 4) for rp in result["rp_percent"]]
+            else:
+                # fallback: original hardcoded 77.5 % split
+                weights = [round(0.775 / 5, 4)] * 5 + [round(1.0 - 5 * (0.775 / 5), 4)]
         else:
+            # Symmetric mode: equal weight per fire point
             weights = [round(1.0 / 6, 4)] * 6
         for sp, w in zip(self.t6_rp_inputs, weights):
             sp.blockSignals(True)
@@ -7033,23 +7226,38 @@ class QRAMainWindow(QMainWindow):
             sp.blockSignals(False)
 
     def _estimate_fire_points(self):
-        """Button handler — routes to symmetric or asymmetric implementation."""
+        """Button handler — routes to symmetric or asymmetric implementation.
+
+        Corrected convention:
+
+          checkedId()==0  "Symmetric fire placement"
+                          -> uniform full-tunnel spacing
+                             (_calc_evc_zone_fire_points)
+
+          checkedId()==1  "Asymmetric fire placement"
+                          -> exit-position-based spacing
+                             (_calc_evc_asymmetric_fire_points)
+        """
         grp = getattr(self, "evc_fp_mode_group", None)
-        if grp is not None and grp.checkedId() == 1:
-            self._calc_evc_asymmetric_fire_points()
+        if grp is not None and grp.checkedId() == 0:
+            # Symmetric fire placement
+            self._calc_evc_zone_fire_points(_skip_exits=True)
         else:
-            self._calc_evc_zone_fire_points()
+            # Asymmetric fire placement
+            self._calc_evc_asymmetric_fire_points()
 
     def _calc_evc_asymmetric_fire_points(self):
-        """Asymmetric fire point placement (always 6 points):
+        """Asymmetric fire point placement (always 6 points).
 
-            The first 77.5 % of TL is divided into 5 equal sections;
-            RP1–RP5 are placed at the centre of each of those sections.
-            RP6 follows the same section spacing (k) into the 22.5 % tail:
+        Uses tunnel_fire_positions_and_rp() — formula from
+        터널교통량등제원, row 73, cols F:R:
 
-                k    = (TL × 0.775) / 5
-                RP_i = (i – 0.5) × k   for i = 1 … 5
-                RP6  = 5.5 × k            (one more step beyond RP5)
+            section_distance = exit_position_m / 6
+            fire_positions   = [section_distance/2 + i*section_distance  for i in 0..5]
+            RP_i             = zone_midpoint_span / total_length
+
+        exit_position_m is read from the first 'exit' row in the fire-location
+        table (D73 equivalent).  Falls back to TL × 0.775 when not set.
         """
         # ── tunnel length ────────────────────────────────────────────────────
         tl_m = 0.0
@@ -7070,12 +7278,15 @@ class QRAMainWindow(QMainWindow):
         self.evc_tunnel_length.setValue(tl_m)
         self.evc_tunnel_length.blockSignals(False)
 
-        # ── asymmetric positions ─────────────────────────────────────────────
-        k = (tl_m * 0.775) / 5          # section width for RP1–RP5
-        positions = [round((i - 0.5) * k, 1) for i in range(1, 6)]   # RP1…RP5
-        positions.append(round(5.5 * k, 1))                            # RP6 = one more step
+        # ── compute positions and RP using the sheet-faithful formula ────────
+        nfire    = max(2, self.evc_num_fp_s4.value())
+        exit_pos = self._get_asym_exit_position_m()
+        result   = tunnel_fire_positions_and_rp(tl_m, exit_pos, num_fire_points=nfire)
+        positions = result["fire_positions_m"]
+        rp_pct    = result["rp_percent"]
+        section_distance = result["spacing_m"]
 
-        total = 6
+        total = nfire
         self.evc_num_fp_s4.blockSignals(True)
         self.evc_num_fp_s4.setValue(total)
         self.evc_num_fp_s4.blockSignals(False)
@@ -7085,7 +7296,7 @@ class QRAMainWindow(QMainWindow):
         tbl.blockSignals(True)
         tbl.setRowCount(total)
 
-        asym_color = QColor(255, 230, 200)   # light orange for RP6
+        asym_color = QColor(255, 230, 200)   # light orange for last point (tail zone)
         for row_idx, fp_x in enumerate(positions):
             itm0 = QTableWidgetItem(str(row_idx + 1))
             itm0.setTextAlignment(Qt.AlignCenter)
@@ -7093,7 +7304,7 @@ class QRAMainWindow(QMainWindow):
 
             itm1 = QTableWidgetItem(f"{fp_x:.1f}")
             itm1.setTextAlignment(Qt.AlignCenter)
-            if row_idx == 5:          # RP6 — highlight asymmetric point
+            if row_idx == total - 1:  # last point — tail-zone
                 itm1.setBackground(asym_color)
             tbl.setItem(row_idx, 1, itm1)
 
@@ -7106,18 +7317,28 @@ class QRAMainWindow(QMainWindow):
         vis = min(total, 8)
         tbl.setFixedHeight(22 * vis + tbl.horizontalHeader().height() + 4)
 
-        msg = (f"✅ Asymmetric fire points (6): RP1–RP5 at section centres "
-               f"[k={k:.1f} m each, first 77.5% of TL], RP6 at {5.5*k:.1f} m (5.5×k): "
-               f"{positions}")
+        rp_str = ", ".join(f"{r:.2f}%" for r in rp_pct)
+        msg = (
+            f"✅ Asymmetric fire points ({total}): exit_pos={exit_pos:.1f} m, "
+            f"spacing={section_distance:.1f} m — "
+            f"positions={positions}  RP=[{rp_str}]"
+        )
         if hasattr(self, "evc_status_text"):
             self.evc_status_text.append(msg)
 
-        # Sync Results-tab RP weights for asymmetric mode
-        self._apply_rp_for_mode(is_asymmetric=True)
+        # Sync Results-tab RP spinboxes directly from computed values
+        if hasattr(self, "t6_rp_inputs") and len(self.t6_rp_inputs) >= 6:
+            for sp, rp in zip(self.t6_rp_inputs, rp_pct):
+                sp.blockSignals(True)
+                sp.setValue(round(rp / 100, 4))
+                sp.blockSignals(False)
 
 
-    def _calc_evc_zone_fire_points(self):
+    def _calc_evc_zone_fire_points(self, _skip_exits: bool = False):
         """Calculate fire point positions per zone using the Excel-verified formula.
+
+        When *_skip_exits* is True (symmetric mode) exit nodes are ignored and
+        the full tunnel is treated as a single zone, giving uniform TL/n spacing.
 
         Formula (confirmed from 터널교통량등제원 sheet, rows 68-73):
 
@@ -7181,22 +7402,23 @@ class QRAMainWindow(QMainWindow):
         nfire = max(1, self.evc_num_fp_s4.value())
 
         # ── 3. Exit nodes from evc_fireloc_table ─────────────────────────────
-        tbl_fl = self.evc_fireloc_table
         exit_nodes = []
-        for ri in range(tbl_fl.rowCount()):
-            name_itm = tbl_fl.item(ri, 0)
-            pos_itm  = tbl_fl.item(ri, 1)
-            if name_itm is None:
-                continue
-            name = name_itm.text().strip()
-            if name.lower() in ("", "+ add row"):
-                continue
-            if name.lower() == "exit" and pos_itm:
-                try:
-                    exit_nodes.append(float(pos_itm.text().strip()))
-                except ValueError:
-                    pass
-        exit_nodes.sort()
+        if not _skip_exits:   # when True (symmetric mode): single zone, ignore exits
+            tbl_fl = self.evc_fireloc_table
+            for ri in range(tbl_fl.rowCount()):
+                name_itm = tbl_fl.item(ri, 0)
+                pos_itm  = tbl_fl.item(ri, 1)
+                if name_itm is None:
+                    continue
+                name = name_itm.text().strip()
+                if name.lower() in ("", "+ add row"):
+                    continue
+                if name.lower() == "exit" and pos_itm:
+                    try:
+                        exit_nodes.append(float(pos_itm.text().strip()))
+                    except ValueError:
+                        pass
+            exit_nodes.sort()
         n_exit  = len(exit_nodes)
 
         # ── 4. Zone node list: [0, exit1, exit2, ..., TL] ────────────────────
@@ -7283,7 +7505,7 @@ class QRAMainWindow(QMainWindow):
         if hasattr(self, "evc_status_text"):
             self.evc_status_text.append(msg)
 
-        # Sync Results-tab RP weights for symmetric mode
+        # Sync Results-tab RP weights for symmetric (uniform-spacing) mode
         self._apply_rp_for_mode(is_asymmetric=False)
 
     def create_tab5_statistics(self):
@@ -9406,12 +9628,31 @@ class QRAMainWindow(QMainWindow):
         _st5_info.setStyleSheet("color:#555;font-size:11px;padding:4px;")
         st5_vbox.addWidget(_st5_info)
 
-        self.t6_raw_sen_tbl = QTableWidget(0, 10)
-        self.t6_raw_sen_tbl.setHorizontalHeaderLabels([
+        # Sort toolbar
+        _raw_sen_col_names = [
             "Fire Pos", "HRR", "Traffic", "Fan/Wind", "Iter#",
-            "EV Time", "Evacuees", "EQ Fatal",
+            "EV Time",
+            "FED>=0.1", "FED>=0.2", "FED>=0.3", "FED>=0.4", "FED>=0.5",
+            "FED>=0.6", "FED>=0.7", "FED>=0.8", "FED>=0.9", "FED>=1.0",
+            "Evacuees", "EQ Fatal",
             "Frequency", "Risk Index"
-        ])
+        ]
+        _sort_row = QHBoxLayout()
+        _sort_row.addWidget(QLabel("Sort by:"))
+        self.t6_raw_sen_sort_col = QComboBox()
+        self.t6_raw_sen_sort_col.addItems(_raw_sen_col_names)
+        self.t6_raw_sen_sort_col.setCurrentIndex(19)  # default: Risk Index
+        _sort_row.addWidget(self.t6_raw_sen_sort_col)
+        self.t6_raw_sen_sort_btn = QPushButton("\u2191  Sort Ascending")
+        self.t6_raw_sen_sort_btn.setFixedWidth(160)
+        self.t6_raw_sen_sort_btn.clicked.connect(self._t6_raw_sen_do_sort)
+        _sort_row.addWidget(self.t6_raw_sen_sort_btn)
+        _sort_row.addStretch()
+        st5_vbox.addLayout(_sort_row)
+        self._t6_raw_sen_sort_asc = True
+
+        self.t6_raw_sen_tbl = QTableWidget(0, 20)
+        self.t6_raw_sen_tbl.setHorizontalHeaderLabels(_raw_sen_col_names)
         self.t6_raw_sen_tbl.horizontalHeader().setStretchLastSection(True)
         self.t6_raw_sen_tbl.setAlternatingRowColors(True)
         self.t6_raw_sen_tbl.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -9525,6 +9766,10 @@ class QRAMainWindow(QMainWindow):
         self.t6_show_grid_cb.setChecked(True)
         self.t6_show_grid_cb.toggled.connect(self._t6_draw_fn_chart)
         _alarp_row.addWidget(self.t6_show_grid_cb)
+        self.t6_show_knots_cb = QCheckBox("Scenario knots")
+        self.t6_show_knots_cb.setChecked(True)
+        self.t6_show_knots_cb.toggled.connect(self._t6_draw_fn_chart)
+        _alarp_row.addWidget(self.t6_show_knots_cb)
         self.t6_alarp_upper.valueChanged.connect(self._t6_draw_fn_chart)
         self.t6_alarp_lower.valueChanged.connect(self._t6_draw_fn_chart)
         _redraw_btn = QPushButton("🔁  Redraw")
@@ -9686,6 +9931,64 @@ class QRAMainWindow(QMainWindow):
 
         self.t6_subtabs.addTab(st7, "FN Curve")
 
+        # ════════════════════════════════════════════════════════════════════
+        # Sub-tab 8 — FN Curve2  (mirrors the FNCurve2 sheet)
+        #   Replicates the two halves of the VB FNCurve2 worksheet:
+        #     • Left  : per-vehicle-category frequency summary (green block,
+        #               rows 3-23) — Frequency/yr, Frequency/veh-km, Return Year.
+        #     • Right : per-fire-scenario detail block (below the black "재정리"
+        #               separator, rows 25+) produced by VB Fatal2FNSheet:
+        #               Frequency = ECAR × RP(pos), Freq/veh-km = (ECAR/VK)×RP,
+        #               Return Year = 1/Freq, Fatalities, Risk Index = Fat×Freq.
+        # ════════════════════════════════════════════════════════════════════
+        st8 = QWidget()
+        st8_vbox = QVBoxLayout(st8)
+        st8_vbox.setContentsMargins(4, 4, 4, 4)
+        st8_vbox.setSpacing(4)
+
+        _st8_info = QLabel(
+            "FNCurve2 sheet replica.  Per-fire-scenario frequency block built "
+            "the VB Fatal2FNSheet way:  Frequency/yr = ECAR(HRR,Traffic,Wind) × "
+            "RP(fire-pos);  Frequency/veh-km = (ECAR / VK_class) × RP;  "
+            "Return Year = 1/Frequency;  Risk Index = Fatalities × Frequency/yr.  "
+            "Zero-frequency (no-ventilation) scenarios show blank Return Year, "
+            "matching the workbook."
+        )
+        _st8_info.setWordWrap(True)
+        _st8_info.setStyleSheet("color:#555;font-size:11px;padding:4px;")
+        st8_vbox.addWidget(_st8_info)
+
+        # ── Toolbar: Recalculate + summary total ──────────────────────────────
+        _st8_tb = QHBoxLayout()
+        _st8_tb.setSpacing(8)
+        _st8_recalc = QPushButton("⟳ Rebuild FN Curve2")
+        _st8_recalc.setStyleSheet(
+            "QPushButton{background:#2980b9;color:white;border:none;"
+            "padding:4px 10px;border-radius:3px;}"
+            "QPushButton:hover{background:#2471a3;}")
+        _st8_recalc.clicked.connect(self._t6_rebuild_fncurve2)
+        _st8_tb.addWidget(_st8_recalc)
+        self.t6_fnc2_total_lbl = QLabel("Total Risk Index (PLL):  —")
+        self.t6_fnc2_total_lbl.setStyleSheet(
+            "color:#c0392b;font-weight:bold;padding:4px;")
+        _st8_tb.addWidget(self.t6_fnc2_total_lbl)
+        _st8_tb.addStretch(1)
+        st8_vbox.addLayout(_st8_tb)
+
+        # ── Per-fire-scenario detail table (the block below the black row) ────
+        self.t6_fnc2_tbl = QTableWidget(0, 9)
+        self.t6_fnc2_tbl.setHorizontalHeaderLabels([
+            "Fire Point", "Scenario", "Description",
+            "Frequency /yr", "Frequency /veh-km", "Return Year",
+            "Fatalities", "Risk Index", "Cumul. Freq.",
+        ])
+        self.t6_fnc2_tbl.horizontalHeader().setStretchLastSection(True)
+        self.t6_fnc2_tbl.setAlternatingRowColors(True)
+        self.t6_fnc2_tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        st8_vbox.addWidget(self.t6_fnc2_tbl, 1)
+
+        self.t6_subtabs.addTab(st8, "FN Curve2")
+
         # ── Wrap outer in scroll area ─────────────────────────────────────────
         t6_scroll = QScrollArea()
         t6_scroll.setWidgetResizable(True)
@@ -9752,13 +10055,32 @@ class QRAMainWindow(QMainWindow):
             return
 
         self._t6_raw_rows = rows
-        self._t6_populate_evc_result(rows)
-        self._t6_populate_bf(rows)
-        self._t6_populate_bf2(rows)
-        self._t6_populate_scenario(rows)
-        self._t6_populate_raw_scenario(rows)
-        self._t6_populate_raw_fnc(rows)
-        self._t6_draw_fn_chart()
+        # Each populate step is isolated: a failure in one sub-tab (e.g. an
+        # optional tab whose widgets are absent in this build) must not abort
+        # the others. Previously an exception in _t6_populate_fncurve2 would
+        # prevent _t6_draw_fn_chart from running, leaving the FN Curve tab
+        # blank.
+        for _step in (
+            self._t6_populate_evc_result,
+            self._t6_populate_bf,
+            self._t6_populate_bf2,
+            self._t6_populate_scenario,
+            self._t6_populate_raw_scenario,
+            self._t6_populate_raw_fnc,
+            self._t6_populate_fncurve2,
+        ):
+            try:
+                _step(rows)
+            except Exception as _e:
+                import traceback
+                print(f"[Results] {_step.__name__} failed: {_e}")
+                traceback.print_exc()
+        try:
+            self._t6_draw_fn_chart()
+        except Exception as _e:
+            import traceback
+            print(f"[Results] _t6_draw_fn_chart failed: {_e}")
+            traceback.print_exc()
 
         # Compute row breakdown for status display
         _total_run_rows = 0
@@ -9771,6 +10093,8 @@ class QRAMainWindow(QMainWindow):
                 pass
         _total_avg_rows = len(rows)
         _total_t6_rows = _total_run_rows + _total_avg_rows
+        # Keep Standard Scenario P1-P6/Fatalities aligned with live EVC results.
+        self._t6_sync_standard_scenario_fatalities(rows)
         self.t6_status.setText(
             f"✅  Loaded {len(rows)} scenario(s) from {db_path.name}.  "
             f"EVC Result: {_total_run_rows} runs + {_total_avg_rows} AVG = {_total_t6_rows} rows."
@@ -9812,6 +10136,73 @@ class QRAMainWindow(QMainWindow):
         elif "NVC" in n: wind = "NVC"
 
         return pos, hrr, traffic, wind
+
+    def _t6_build_standard_scenario_fatality_map(self, rows):
+        """Build (scenario_id, smoke_control) -> [P1..P6] from EVC AVG rows.
+
+        Uses `avg_eq_fatal` at each fire position as the P-value for that
+        scenario, weighted by n_run when duplicate sessions exist.
+        """
+        import json
+
+        acc = {}  # key -> {sum:[6], wt:[6]}
+
+        for rec in rows or []:
+            pos, hrr, traffic, wind = self._t6_parse_evc_name(rec.get("evc_name", ""))
+            if pos < 1 or pos > 6:
+                continue
+            if hrr in ("?", "SMB", "SMT"):
+                continue
+
+            trc_letter = "N" if traffic == "NORMAL" else ("C" if traffic == "CONGEST" else "")
+            if not trc_letter:
+                continue
+
+            # smoke_control in Standard Scenario uses traffic letter prefix.
+            if wind in ("NVC", "NV0", "FV0", "FVM", "FVP"):
+                smoke = f"{trc_letter}{wind}"
+            else:
+                continue
+
+            scenario_id = f"{hrr}{trc_letter}"
+            key = (scenario_id, smoke)
+
+            try:
+                eq = float(rec.get("avg_eq_fatal") or 0.0)
+            except Exception:
+                eq = 0.0
+
+            n_run = int(rec.get("n_run") or 0)
+            if n_run <= 0:
+                try:
+                    n_run = len(json.loads(rec.get("runs_json") or "[]"))
+                except Exception:
+                    n_run = 1
+            n_run = max(n_run, 1)
+
+            entry = acc.setdefault(key, {"sum": [0.0] * 6, "wt": [0.0] * 6})
+            entry["sum"][pos - 1] += eq * n_run
+            entry["wt"][pos - 1] += n_run
+
+        out = {}
+        for key, entry in acc.items():
+            vals = []
+            for s, w in zip(entry["sum"], entry["wt"]):
+                vals.append((s / w) if w > 0 else 0.0)
+            out[key] = vals
+        return out
+
+    def _t6_sync_standard_scenario_fatalities(self, rows):
+        """Push live P1-P6 fatalities from Tab 6 data into Standard Scenario table."""
+        ssw = getattr(self, "standard_scenario_widget", None)
+        if ssw is None or not hasattr(ssw, "set_fatalities_from_evc_map"):
+            return
+        try:
+            p_map = self._t6_build_standard_scenario_fatality_map(rows)
+            if p_map:
+                ssw.set_fatalities_from_evc_map(p_map)
+        except Exception:
+            pass
 
     def _t6_populate_evc_result(self, rows):
         """Sheet 6 — EVC Result: all runs + AVG row per scenario."""
@@ -10208,7 +10599,9 @@ class QRAMainWindow(QMainWindow):
             self._t6_populate_scenario(rows)
             self._t6_populate_raw_scenario(rows)
             self._t6_populate_raw_fnc(rows)
+            self._t6_populate_fncurve2(rows)
             self._t6_draw_fn_chart()
+            self._t6_sync_standard_scenario_fatalities(rows)
         except Exception as _e:
             try:
                 self.t6_status.setText(f"⚠  Recalculate error: {_e}")
@@ -10329,11 +10722,27 @@ class QRAMainWindow(QMainWindow):
         # session, so dividing by it double-counted across sessions).
         maxiter_by_name = self._t6_build_maxiter_index(rows)
 
+        class _SortableItem(QTableWidgetItem):
+            """QTableWidgetItem that sorts numerically when UserRole data is set."""
+            def __lt__(self, other):
+                v_self  = self.data(Qt.UserRole)
+                v_other = other.data(Qt.UserRole)
+                if v_self is not None and v_other is not None:
+                    try:
+                        return float(v_self) < float(v_other)
+                    except (TypeError, ValueError):
+                        pass
+                return super().__lt__(other)
+
         def _ci(txt, bg=None):
-            it = QTableWidgetItem(str(txt))
+            it = _SortableItem(str(txt))
             it.setTextAlignment(Qt.AlignCenter)
             if bg:
                 it.setBackground(bg)
+            try:
+                it.setData(Qt.UserRole, float(txt))
+            except (TypeError, ValueError):
+                pass
             return it
 
         for rec in rows:
@@ -10361,30 +10770,100 @@ class QRAMainWindow(QMainWindow):
                 run_no  = run.get("run_no", run.get("run", "?"))
                 ev_time = run.get("ev_time", 0)
                 evac    = run.get("evacuees", 0)
-                eq_f    = run.get("eq_fatal", 0)
+                _eq_raw = run.get("eq_fatal")
+                eq_f    = float(_eq_raw) if _eq_raw is not None else 0.0
 
                 # VB CalnFillFreq: freq_per_iter = ECAR × RP(pos) / maxiter
                 freq_iter = freq_scenario / n_runs if n_runs > 0 else 0
+
+                # All runs are shown (mirrors EVC Result sub-tab which includes
+                # every individual run without filtering).  Risk Index is still
+                # computed for every row; runs with very small EQ Fatal naturally
+                # contribute near-zero to the total.
                 risk_idx  = freq_iter * eq_f
                 total_risk += risk_idx
 
                 ri = tbl.rowCount(); tbl.insertRow(ri)
+                fed_list = run.get("fed", [])
                 tbl.setItem(ri, 0, _ci(f"P{pos}"))
                 tbl.setItem(ri, 1, _ci(hrr))
                 tbl.setItem(ri, 2, _ci(traffic))
                 tbl.setItem(ri, 3, _ci(wind))
                 tbl.setItem(ri, 4, _ci(run_no))
                 tbl.setItem(ri, 5, _ci(f"{ev_time:.1f}"))
-                tbl.setItem(ri, 6, _ci(f"{evac:.0f}"))
-                tbl.setItem(ri, 7, _ci(f"{eq_f:.4f}"))
-                tbl.setItem(ri, 8, _ci(f"{freq_iter:.4E}"))
-                tbl.setItem(ri, 9, _ci(f"{risk_idx:.4E}",
+                for _fi in range(10):
+                    _fv = int(fed_list[_fi]) if _fi < len(fed_list) else 0
+                    tbl.setItem(ri, 6 + _fi, _ci(_fv))
+                tbl.setItem(ri, 16, _ci(f"{evac:.0f}"))
+                tbl.setItem(ri, 17, _ci(f"{eq_f:.4f}"))
+                tbl.setItem(ri, 18, _ci(f"{freq_iter:.4E}"))
+                tbl.setItem(ri, 19, _ci(f"{risk_idx:.4E}",
                     bg=(QColor(255, 220, 220) if risk_idx > 1e-7 else None)))
 
         self.t6_total_risk_lbl.setText(f"{total_risk:.6E}  events·fatalities / yr")
         tbl.resizeColumnsToContents()
+        # Reset sort button label after re-population
+        self._t6_raw_sen_sort_asc = True
+        self.t6_raw_sen_sort_btn.setText("\u2191  Sort Ascending")
         # Store for FN chart
         self._t6_total_risk = total_risk
+
+    def _t6_raw_sen_do_sort(self):
+        """Toggle sort direction and sort the Raw Scenario table by the selected column.
+
+        Implemented as a pure-Python row sort so that:
+        - entire rows always move together as a unit
+        - numeric columns (EV Time, FED counts, Frequency, Risk Index …) sort by
+          value rather than lexicographically
+        - background colours (e.g. highlighted Risk Index cells) are preserved
+        """
+        self._t6_raw_sen_sort_asc = not self._t6_raw_sen_sort_asc
+        ascending = self._t6_raw_sen_sort_asc
+        self.t6_raw_sen_sort_btn.setText(
+            "\u2191  Sort Ascending" if ascending else "\u2193  Sort Descending"
+        )
+        col  = self.t6_raw_sen_sort_col.currentIndex()
+        tbl  = self.t6_raw_sen_tbl
+        n_rows = tbl.rowCount()
+        n_cols = tbl.columnCount()
+
+        # 1. Snapshot every cell: (text, QBrush, UserRole-float-or-None)
+        snapshot = []
+        for r in range(n_rows):
+            cells = []
+            for c in range(n_cols):
+                item = tbl.item(r, c)
+                if item:
+                    cells.append((item.text(),
+                                  item.background(),
+                                  item.data(Qt.UserRole)))
+                else:
+                    cells.append(("", None, None))
+            snapshot.append(cells)
+
+        # 2. Build sort key for each row using the target column.
+        #    Rows with a numeric UserRole sort numerically; others sort as text.
+        def _sort_key(cells):
+            text, _bg, num = cells[col]
+            if num is not None:
+                return (0, num, "")       # numeric primary
+            return (1, 0.0, text.lower()) # text fallback
+
+        snapshot.sort(key=_sort_key, reverse=not ascending)
+
+        # 3. Rewrite the table with the sorted rows (preserves backgrounds).
+        tbl.setRowCount(0)
+        for cells in snapshot:
+            ri = tbl.rowCount()
+            tbl.insertRow(ri)
+            for c, (text, bg, num) in enumerate(cells):
+                it = QTableWidgetItem(text)
+                it.setTextAlignment(Qt.AlignCenter)
+                if bg is not None and bg.style() != Qt.NoBrush:
+                    it.setBackground(bg)
+                if num is not None:
+                    it.setData(Qt.UserRole, num)
+                tbl.setItem(ri, c, it)
 
     def _t6_populate_raw_fnc(self, rows):
         """Sheet 13 — Raw_FNC: sorted FN step data (mirrors FN_CURVE_CREATE3 VB sub)."""
@@ -10406,6 +10885,15 @@ class QRAMainWindow(QMainWindow):
             ecar = self._t6_get_ecar(hrr, traffic, wind)
             freq_scenario = ecar * rp[pos - 1] if 1 <= pos <= 6 else ecar
 
+            # VB-parity: NORMAL+NV0 scenarios have ECAR=0 in the SenarioTable.
+            # Skip zero-frequency scenarios entirely — same guard used by
+            # _t6_populate_raw_scenario (VB_SKIP_ZERO_FREQ).  Without this,
+            # NV0 runs enter the loop, produce freq_iter=0, and can leak into
+            # step_rows when the inner check is bypassed by floating-point edge
+            # cases (e.g. -0.0 or denormal underflow).
+            if freq_scenario <= 0.0:
+                continue
+
             try:
                 runs_raw = json.loads(rec.get("runs_json") or "[]")
             except Exception:
@@ -10417,18 +10905,26 @@ class QRAMainWindow(QMainWindow):
                          len(runs_raw), 1)
 
             for run in runs_raw:
-                eq_f    = run.get("eq_fatal", 0)
+                eq_f    = float(run.get("eq_fatal") or 0)
                 ev_time = run.get("ev_time", 0)
                 evac    = run.get("evacuees", 0)
-                if eq_f <= 0:
+                # Business rule: EQ Fatal < 0.1 → zeroed and excluded from FN curve.
+                if eq_f < 0.1:
                     continue
-                freq_iter = freq_scenario / n_runs
+                freq_iter = freq_scenario / n_runs if n_runs > 0 else 0.0
+                # Skip rows with zero or negative frequency.
+                if freq_iter <= 0:
+                    continue
                 step_rows.append({
                     "pos": pos, "hrr": hrr, "traffic": traffic, "wind": wind,
                     "ev_time": ev_time, "evacuees": evac,
                     "eq_fatal": eq_f, "freq": freq_iter,
                     "name": rec["evc_name"],
                 })
+
+        # Final safety filter — remove any row that still has EQ Fatal < 0.1
+        # or zero frequency (guards against None/type edge cases above).
+        step_rows = [r for r in step_rows if r["eq_fatal"] >= 0.1 and r["freq"] > 0]
 
         # Sort by eq_fatal descending (matches VB FN_CURVE_CREATE3 xlDescending sort)
         step_rows.sort(key=lambda r: -r["eq_fatal"])
@@ -10472,6 +10968,11 @@ class QRAMainWindow(QMainWindow):
             return it
 
         for step in step_rows:
+            # Display-level guard: skip any row that still has zero/negative
+            # frequency or EQ Fatal below the 0.1 threshold (belt-and-suspenders
+            # against any data that slipped through the upstream filters).
+            if step['freq'] <= 0.0 or step['eq_fatal'] < 0.1:
+                continue
             ri = tbl.rowCount(); tbl.insertRow(ri)
             tbl.setItem(ri, 0, _ci(f"P{step['pos']}"))
             tbl.setItem(ri, 1, _ci(f"{step['hrr']}"))
@@ -10483,6 +10984,186 @@ class QRAMainWindow(QMainWindow):
             tbl.setItem(ri, 7, _ci(f"{step['cumul_freq']:.4E}"))
 
         tbl.resizeColumnsToContents()
+
+    # ════════════════════════════════════════════════════════════════════════
+    # FN Curve2  (replica of the FNCurve2 worksheet, VB Fatal2FNSheet logic)
+    # ════════════════════════════════════════════════════════════════════════
+    def _t6_vk_for_hrr(self, hrr: str) -> float:
+        """Vehicle-km denominator for the Frequency/veh-km column, by HRR class.
+
+        Mirrors the VB FNCurve2 'F = E / VK.xxx' normalisation:
+          PC  -> VK.PC,  020 -> VK.HRR020,  030 -> VK.HRR030,  100 -> VK.HRR100.
+        Pulled from the StandardScenarioWidget's fire-size factors (which load
+        VK.PC / VK.HRRxxx from the workbook). Falls back to VB defaults.
+        """
+        ssw = getattr(self, "standard_scenario_widget", None)
+        factors = getattr(ssw, "_fire_size_factors", None) if ssw else None
+        # Defaults match standard_scenario_widget.FireSizeWorkbookFactors.default()
+        vk_pc = 2759393.065
+        vk_hrr = {10: 2759393.065, 20: 287594.45, 30: 70309.27475, 100: 2346.16525}
+        if factors is not None:
+            try:
+                vk_pc = float(factors.vk_pc) or vk_pc
+                vk_hrr = {int(k): float(v) for k, v in (factors.vk_hrr or {}).items()} or vk_hrr
+            except Exception:
+                pass
+        if hrr in ("PC1", "PC2", "PC"):
+            return vk_pc
+        if hrr == "020":
+            return vk_hrr.get(20, 287594.45)
+        if hrr == "030":
+            return vk_hrr.get(30, 70309.27475)
+        if hrr == "100":
+            return vk_hrr.get(100, 2346.16525)
+        return vk_pc
+
+    def _t6_populate_fncurve2(self, rows):
+        """Replicate the FNCurve2 worksheet's per-fire-scenario detail block.
+
+        Implements the VB Fatal2FNSheet writer for each (fire-position × scenario)
+        combination:
+            Frequency /yr     = ECAR(HRR, Traffic, Wind) × RP(fire-pos)
+            Frequency /veh-km = (ECAR / VK_class)        × RP(fire-pos)
+            Return Year       = 1 / Frequency/yr   (blank if Frequency == 0)
+            Fatalities        = scenario EQ_Fatal (averaged over runs)
+            Risk Index        = Fatalities × Frequency/yr
+        Then sorts by Fatalities descending and computes the cumulative
+        frequency column, exactly as FN_CURVE_CREATE2 does.
+        """
+        import json
+        # Guard: some builds do not construct the optional "FN Curve2" sub-tab.
+        # If its widgets are absent, no-op rather than raising AttributeError
+        # (which would otherwise abort the whole _t6_load_all sequence and
+        # leave later tabs — e.g. the FN Curve chart — unpopulated).
+        if not hasattr(self, "t6_fnc2_tbl"):
+            return
+        tbl = self.t6_fnc2_tbl
+        tbl.setRowCount(0)
+        rp = self._t6_get_rp_weights()
+        maxiter_by_name = self._t6_build_maxiter_index(rows)
+
+        scen_rows = []
+        for rec in rows:
+            pos, hrr, traffic, wind = self._t6_parse_evc_name(rec["evc_name"])
+            ecar = self._t6_get_ecar(hrr, traffic, wind)
+            rp_w = rp[pos - 1] if 1 <= pos <= 6 else 1.0
+
+            # Frequency/yr = ECAR × RP(pos)  (VB Fatal2FNSheet: Freq1(j) × RP(i))
+            freq_yr = ecar * rp_w
+            # VB-parity: skip zero-frequency scenarios (NORMAL+NV0), matching the
+            # Raw Scenario tab and VB's displayed FNCurve2 block.
+            if freq_yr <= 0.0:
+                continue
+            # Frequency/veh-km = (ECAR / VK_class) × RP(pos)  (Freq2(j) × RP(i))
+            vk = self._t6_vk_for_hrr(hrr)
+            freq_vk = (ecar / vk * rp_w) if vk else 0.0
+
+            # ── Fatalities & Risk Index (VB CalnFillFreq / Fatal2FNSheet) ────
+            # Raw Scenario computes risk per iteration as:
+            #     Σ_iter [ (ECAR×RP / maxiter) × eq_iter ]
+            #   = ECAR×RP × ( Σ_iter eq_iter / maxiter )
+            # where maxiter is the TOTAL iteration count across every DB row
+            # that shares this scenario's evc_name (not just this row's runs).
+            # FN Curve2 must use the same normalisation so its Total Risk Index
+            # matches the Raw Scenario tab. Previously it divided by this row's
+            # run count only and multiplied by the full ECAR×RP, which
+            # over-counted scenarios that span more than one DB row.
+            try:
+                runs_raw = json.loads(rec.get("runs_json") or "[]")
+            except Exception:
+                runs_raw = []
+
+            # Per-iteration EQ Fatal with the same 0.1 cutoff Raw Scenario uses
+            # (a zero-fatality iteration must contribute zero risk).
+            eq_vals = [(r.get("eq_fatal", 0) or 0.0) for r in runs_raw]
+            eq_cut  = [e if e >= 0.1 else 0.0 for e in eq_vals]
+
+            # maxiter = full iteration count for this scenario across all rows.
+            n_runs = max(maxiter_by_name.get(rec.get("evc_name") or "", 0),
+                         len(eq_vals), 1)
+
+            # Displayed Fatalities = expected deaths if this fire occurs =
+            # within-scenario mean (NOT divided by maxiter), so the column still
+            # reads as a physical fatality count.
+            if eq_vals:
+                fatalities = sum(eq_vals) / len(eq_vals)
+            else:
+                fatalities = rec.get("avg_eq_fatal", 0) or 0.0
+            if abs(fatalities) < 5e-5:
+                fatalities = 0.0
+
+            # Business rule (EXCLUSION): a scenario whose (averaged) Fatalities
+            # is below 0.1 is excluded entirely — not displayed and not summed
+            # into the Risk Index / PLL. (Zero-frequency rows were already
+            # skipped above.) Keeps this tab consistent with the Raw FNC table
+            # and the FN curve.
+            if fatalities < 0.1:
+                continue
+
+            # Risk Index = ECAR×RP × ( Σ eq_iter / maxiter )  — VB-faithful,
+            # identical to the Raw Scenario per-iteration accumulation.
+            fatalities_for_risk = (sum(eq_cut) / n_runs) if n_runs > 0 else 0.0
+            return_year = (1.0 / freq_yr) if freq_yr > 0 else None
+            risk_index = freq_yr * fatalities_for_risk
+
+            scen_rows.append({
+                "pos": pos,
+                "scenario": f"{hrr}-{wind}",
+                "desc": f"{hrr} {traffic} / {wind}",
+                "freq_yr": freq_yr,
+                "freq_vk": freq_vk,
+                "return_year": return_year,
+                "fatalities": fatalities,
+                "risk_index": risk_index,
+            })
+
+        # Sort by Fatalities descending (VB FN_CURVE_CREATE2 xlDescending on R-col)
+        scen_rows.sort(key=lambda r: -r["fatalities"])
+
+        # Cumulative frequency (S-column: running sum of Frequency/yr)
+        cumul = 0.0
+        total_risk = 0.0
+        for r in scen_rows:
+            cumul += r["freq_yr"]
+            r["cumul_freq"] = cumul
+            total_risk += r["risk_index"]
+
+        def _ci(txt, right=False, bg=None):
+            it = QTableWidgetItem(str(txt))
+            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter if right
+                                else Qt.AlignCenter)
+            if bg:
+                it.setBackground(bg)
+            return it
+
+        for r in scen_rows:
+            ri = tbl.rowCount(); tbl.insertRow(ri)
+            tbl.setItem(ri, 0, _ci(f"P{r['pos']}"))
+            tbl.setItem(ri, 1, _ci(r["scenario"]))
+            tbl.setItem(ri, 2, _ci(r["desc"]))
+            tbl.setItem(ri, 3, _ci(f"{r['freq_yr']:.4E}", right=True))
+            tbl.setItem(ri, 4, _ci(f"{r['freq_vk']:.4E}", right=True))
+            tbl.setItem(ri, 5, _ci("" if r["return_year"] is None
+                                   else f"{r['return_year']:,.1f}", right=True))
+            tbl.setItem(ri, 6, _ci(f"{r['fatalities']:.1f}", right=True))
+            ri_bg = QColor(255, 220, 220) if r["risk_index"] > 1e-7 else None
+            tbl.setItem(ri, 7, _ci(f"{r['risk_index']:.4E}", right=True, bg=ri_bg))
+            tbl.setItem(ri, 8, _ci(f"{r['cumul_freq']:.4E}", right=True))
+
+        tbl.resizeColumnsToContents()
+        self.t6_fnc2_total_lbl.setText(
+            f"Total Risk Index (PLL):  {total_risk:.6E}  events·fatalities / yr")
+
+    def _t6_rebuild_fncurve2(self):
+        """Rebuild button handler — re-reads the loaded rows and repopulates."""
+        if not hasattr(self, "t6_fnc2_total_lbl"):
+            return  # FN Curve2 sub-tab not present in this build
+        rows = getattr(self, "_t6_raw_rows", None)
+        if not rows:
+            self.t6_fnc2_total_lbl.setText(
+                "Total Risk Index (PLL):  —  (load results first)")
+            return
+        self._t6_populate_fncurve2(rows)
 
     def _t6_draw_fn_chart(self):
         """Sheet 11 — FNCurve2: draw the log-log FN staircase chart (mirrors UI 1)."""
@@ -10496,6 +11177,12 @@ class QRAMainWindow(QMainWindow):
             _tbl.setRowCount(0)
             _step_rows = getattr(self, '_t6_step_rows_sorted', [])
             for _sr in _step_rows:
+                # Exclusion rule (display guard): never show a row whose
+                # frequency is <= 0 or whose EQ Fatal is < 0.1, consistent with
+                # the Raw FNC table and the risk-index total.
+                if float(_sr.get('freq', 0) or 0) <= 0.0 or \
+                   float(_sr.get('eq_fatal', 0) or 0) < 0.1:
+                    continue
                 _ri = _tbl.rowCount(); _tbl.insertRow(_ri)
                 def _ci(v):
                     _it = QTableWidgetItem(str(v))
@@ -10592,7 +11279,7 @@ class QRAMainWindow(QMainWindow):
             ax.plot(xs, ys, '-', color='#2c3e50', linewidth=2.0, label='F-N curve')
 
         # ── Scenario knots ────────────────────────────────────────────────
-        if self._t6_fn_pts:
+        if self._t6_fn_pts and getattr(self, 't6_show_knots_cb', None) and self.t6_show_knots_cb.isChecked():
             _kx = [p[0] for p in self._t6_fn_pts]
             _ky = [p[1] for p in self._t6_fn_pts]
             ax.plot(_kx, _ky, 'o', color='#c0392b', markersize=5, label='Scenario knots')
@@ -10650,6 +11337,7 @@ class QRAMainWindow(QMainWindow):
         self._t6_populate_scenario(rows)
         self._t6_populate_raw_scenario(rows)
         self._t6_populate_raw_fnc(rows)
+        self._t6_populate_fncurve2(rows)
         self._t6_draw_fn_chart()
         self.t6_status.setText("✅  Recalculated with updated RP weights / exmax / exmin.")
 
@@ -10739,6 +11427,23 @@ class QRAMainWindow(QMainWindow):
             from openpyxl import Workbook
             from openpyxl.styles import Font, PatternFill, Alignment
 
+            def _parse_scientific(text: str):
+                import re
+                if not text:
+                    return None
+                m = re.search(r"([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)", str(text))
+                if not m:
+                    return None
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    return None
+
+            def _summary_value_from_label(widget):
+                if widget is None:
+                    return None
+                return _parse_scientific(widget.text())
+
             wb = Workbook()
             ws = wb.active; ws.title = "EVC_Result"
 
@@ -10771,6 +11476,34 @@ class QRAMainWindow(QMainWindow):
             _write_table(ws, tables[0][0], tables[0][1])
             for tbl_w, sname in tables[1:]:
                 _write_table(wb.create_sheet(), tbl_w, sname)
+
+            # Summary cells on the same results sheet.
+            # Place them to the right of the main results table so they do not
+            # interfere with the exported table layout.
+            summary_col = max(6, tables[0][0].columnCount() + 2)
+            summary_fill = PatternFill("solid", fgColor="EAF2F8")
+            label_fill = PatternFill("solid", fgColor="D6EAF8")
+            label_font = Font(bold=True, color="1F2D3D")
+            value_font = Font(bold=True, color="C0392B")
+
+            summaries = [
+                ("Risk Index", _summary_value_from_label(getattr(self, "t6_total_risk_lbl", None))),
+                ("PLL", _summary_value_from_label(getattr(self, "t6_fnc2_total_lbl", None))),
+            ]
+            for row_offset, (label, value) in enumerate(summaries, start=1):
+                label_cell = ws.cell(row=row_offset, column=summary_col, value=label)
+                label_cell.font = label_font
+                label_cell.fill = label_fill
+                label_cell.alignment = Alignment(horizontal="center")
+
+                value_cell = ws.cell(
+                    row=row_offset,
+                    column=summary_col + 1,
+                    value=("" if value is None else value),
+                )
+                value_cell.font = value_font
+                value_cell.fill = summary_fill
+                value_cell.alignment = Alignment(horizontal="center")
 
             # FN chart image if available
             if getattr(self, '_t6_has_canvas', False):
@@ -10897,6 +11630,71 @@ class QRAMainWindow(QMainWindow):
                             self._t6_load_ecar_from_standard_scenario()
                     except Exception:
                         pass
+                # If Tab 6 rows already exist, sync P1-P6/fatalities immediately.
+                if getattr(self, "_t6_raw_rows", None):
+                    self._t6_sync_standard_scenario_fatalities(self._t6_raw_rows)
+        except Exception:
+            pass
+
+        # ── Auto-populate D3/G3/J3 in Tunnel Traffic Volume from Tunnel Info ──
+        # Reads Length (m→km), Gradient (%), Perimeter (m) from the Tunnel
+        # Basic Specifications panel in EVC/FED Analysis → Tunnel Info and
+        # pushes them live into the corresponding editable cells every time
+        # any of those three fields changes.
+        try:
+            def _push_tunnel_info_to_traffic(*_args):
+                ttw = getattr(self, "tunnel_traffic_widget", None)
+                if ttw is None or not hasattr(ttw, "set_tunnel_info_cells"):
+                    return
+                try:
+                    length   = float(self.tbi_length.text().strip()    or 0)
+                    gradient = float(self.tbi_gradient.text().strip()   or 0)
+                    perimeter = float(self.tbi_road_width.text().strip() or 0)
+                    ttw.set_tunnel_info_cells(length, gradient, perimeter)
+                except (ValueError, AttributeError):
+                    pass
+
+            self.tbi_length.textChanged.connect(_push_tunnel_info_to_traffic)
+            self.tbi_gradient.textChanged.connect(_push_tunnel_info_to_traffic)
+            self.tbi_road_width.textChanged.connect(_push_tunnel_info_to_traffic)
+            # Initial push so values are correct immediately on startup.
+            _push_tunnel_info_to_traffic()
+        except Exception:
+            pass
+
+        # ── Auto-populate E8:K8 and E11:K11 from Traffic Volume & Vehicle Specs ──
+        # Row 0 ("+Dir") → E8:K8 and Row 6 ("Occupants") → E11:K11 in the
+        # Tunnel Traffic Volume sheet.  Updates fire whenever either row changes.
+        try:
+            _VOL_N_COLS = 7   # Car … Special  (columns E through K)
+            _ROW_PLUS_DIR  = 0
+            _ROW_OCCUPANTS = 6
+
+            def _read_veh_row(row_idx: int):
+                """Return list of 7 text values from tbi_veh_table for row_idx."""
+                vals = []
+                for ci in range(_VOL_N_COLS):
+                    it = self.tbi_veh_table.item(row_idx, ci)
+                    vals.append(it.text().strip() if it else "0")
+                return vals
+
+            def _push_traffic_volume_to_tunnel(*_args):
+                ttw = getattr(self, "tunnel_traffic_widget", None)
+                if ttw is None or not hasattr(ttw, "set_traffic_volume_cells"):
+                    return
+                try:
+                    plus_dir  = _read_veh_row(_ROW_PLUS_DIR)
+                    occupants = _read_veh_row(_ROW_OCCUPANTS)
+                    ttw.set_traffic_volume_cells(plus_dir, occupants)
+                except Exception:
+                    pass
+
+            self.tbi_veh_table.cellChanged.connect(
+                lambda r, _c: _push_traffic_volume_to_tunnel()
+                if r in (_ROW_PLUS_DIR, _ROW_OCCUPANTS) else None
+            )
+            # Initial push on startup.
+            _push_traffic_volume_to_tunnel()
         except Exception:
             pass
         
@@ -12949,6 +13747,7 @@ class QRAMainWindow(QMainWindow):
         # except ImportError as e:
         #     QMessageBox.critical(self, "Import Error",
         #                        f"Failed to import FDS to FDB converter:\n{e}\n\n"
+
         #                        f"Please ensure fds_to_fdb_converter.py is in fds_workflow/ directory.")
         #     return
 
@@ -16318,4 +17117,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

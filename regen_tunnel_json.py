@@ -167,6 +167,15 @@ for row_cells in ws_f.iter_rows():
             'manual_override': False,   # always reset on regen
         })
 
+# Force specific cells to always be editable (blue) regardless of their Excel
+# background colour.  These are cells the user must be able to edit freely
+# without unlocking admin mode.
+FORCE_EDITABLE_CELLS = {'J3', 'K3'}
+for _c in cells:
+    if _c['coordinate'] in FORCE_EDITABLE_CELLS:
+        _c['is_editable'] = True
+        _c['color'] = BLUE_EDITABLE
+
 print(f"Total cells: {len(cells)}")
 editable_count = sum(1 for c in cells if c['is_editable'])
 formula_count  = sum(1 for c in cells if c.get('formula'))

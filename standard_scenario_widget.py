@@ -12,13 +12,14 @@ Key behavior:
 
 from __future__ import annotations
 
-import math
 import os
 import tempfile
 import importlib
+import zipfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 
@@ -51,6 +52,82 @@ from PyQt5.QtWidgets import (
 )
 
 
+def calculate_fire_positions_and_rp(
+    tunnel_length_m: float,
+    n_fire: int = 6,
+    ran_evc_fire: float = 25.0,
+) -> Dict[str, list]:
+    """Compute asymmetric fire placement weights (row-73 / Excel _rp logic).
+
+    Returns a dict with keys:
+      'fire_positions'  – list of fire centre positions in metres
+      'rp_percentages'  – list of RP weights as percentages (sum ≈ 100)
+      'rp_weights'      – list of RP weights as fractions   (sum = 1.0)
+    """
+    spacing = (tunnel_length_m - ran_evc_fire) / n_fire
+    fire_positions = [spacing / 2.0]
+    for _ in range(1, n_fire):
+        fire_positions.append(fire_positions[-1] + spacing)
+    rp = [spacing / tunnel_length_m] * (n_fire - 1)
+    rp.append((tunnel_length_m - spacing * (n_fire - 1)) / tunnel_length_m)
+    return {
+        "fire_positions": [round(x, 1) for x in fire_positions],
+        "rp_percentages": [round(x * 100.0, 2) for x in rp],
+        "rp_weights": rp,
+    }
+
+
+@lru_cache(maxsize=1)
+def _load_standard_scenario_workbook_outputs() -> Dict[int, Dict[str, List[float]]]:
+    """Load workbook-backed fatalities outputs from 표준시나리오.
+
+    The workbook already stores the P1-P6 values in U:Z and the total fatalities
+    formula in T for each scenario row. We read the cached XML values directly so
+    the in-app model stays aligned with the workbook formulas without requiring
+    openpyxl.
+    """
+    workbook_path = Path(__file__).with_name("FNCV_ROAD.xlsm")
+    outputs: Dict[int, Dict[str, List[float]]] = {}
+    if not workbook_path.exists():
+        return outputs
+
+    try:
+        with zipfile.ZipFile(workbook_path) as zf:
+            sheet_name = "xl/worksheets/sheet10.xml"
+            if sheet_name not in zf.namelist():
+                return outputs
+
+            ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            root = ET.fromstring(zf.read(sheet_name))
+
+            def _cell_value(cell) -> float:
+                node = cell.find("m:v", ns)
+                if node is None or node.text is None:
+                    return 0.0
+                try:
+                    return float(node.text)
+                except ValueError:
+                    return 0.0
+
+            for row in root.findall('.//m:sheetData/m:row', ns):
+                row_idx = int(row.attrib.get('r', '0') or '0')
+                if row_idx < 10 or row_idx > 59:
+                    continue
+
+                cells = {cell.attrib.get('r', ''): cell for cell in row.findall('m:c', ns)}
+                p_values = [_cell_value(cells.get(f"{col}{row_idx}")) for col in ("U", "V", "W", "X", "Y", "Z")]
+                total_fatalities = _cell_value(cells.get(f"T{row_idx}"))
+
+                outputs[row_idx] = {
+                    "fatalities_total": total_fatalities,
+                    "fatalities": p_values,
+                }
+    except Exception:
+        return outputs
+
+    return outputs
+
+
 @dataclass
 class SubScenario:
     scenario_id: str
@@ -63,6 +140,7 @@ class SubScenario:
     traffic: str
     ventilation: str
     wind: str
+    fatalities_total: float = 0.0
 
 
 @dataclass
@@ -111,6 +189,11 @@ class FireSizeWorkbookFactors:
     vk_hrr: Dict[int, float]
     lfr: Dict[int, float]
     smoke_probs: Dict[str, float] = field(default_factory=dict)
+    # Person-type risk weights (_rp1–_rp6) used in the Fetalities formula:
+    # Fetalities (명/건) = rp1*P1 + rp2*P2 + rp3*P3 + rp4*P4 + rp5*P5 + rp6*P6
+    rp_weights: List[float] = field(
+        default_factory=lambda: [0.1348926935133834] * 5 + [0.32553653243308395]
+    )
 
     @classmethod
     def default(cls) -> "FireSizeWorkbookFactors":
@@ -206,6 +289,28 @@ class FireSizeWorkbookFactors:
                 except Exception:
                     _smoke = cls.default().smoke_probs
 
+                # Compute rp_weights via the asymmetric fire placement formula.
+                try:
+                    _tl_km = resolve_defined_value("TL")
+                    _tl_m = _tl_km * 1000.0
+                    _n_fire = int(resolve_defined_value("nFire") or 6)
+                    _ran_evc = resolve_defined_value("ranEVCFire") or 25.0
+                    if _tl_m > _ran_evc:
+                        _rp_weights = calculate_fire_positions_and_rp(
+                            _tl_m, n_fire=_n_fire, ran_evc_fire=_ran_evc
+                        )["rp_weights"]
+                    else:
+                        raise ValueError("invalid tunnel length")
+                except Exception:
+                    _rp_weights = [
+                        resolve_defined_value("_rp1"),
+                        resolve_defined_value("_rp2"),
+                        resolve_defined_value("_rp3"),
+                        resolve_defined_value("_rp4"),
+                        resolve_defined_value("_rp5"),
+                        resolve_defined_value("_rp6"),
+                    ]
+
                 return cls(
                     base=resolve_defined_value("BASE"),
                     vk_pc=resolve_defined_value("VK.PC"),
@@ -222,6 +327,7 @@ class FireSizeWorkbookFactors:
                         100: resolve_defined_value("LFR.100"),
                     },
                     smoke_probs=_smoke,
+                    rp_weights=_rp_weights,
                 )
         except Exception:
             return cls.default()
@@ -292,6 +398,7 @@ def _clone_branch_from_template(template: FireScenario, scenario_id: str, branch
                 traffic=src.traffic,
                 ventilation=src.ventilation,
                 wind=src.wind,
+                fatalities_total=src.fatalities_total,
             )
         )
     return FireScenario(
@@ -306,6 +413,37 @@ def _clone_branch_from_template(template: FireScenario, scenario_id: str, branch
 
 
 def _build_standard_scenario_data() -> List[VehicleType]:
+    workbook_outputs = _load_standard_scenario_workbook_outputs()
+
+    def _apply_workbook_outputs(sub_scenarios: List[SubScenario], row_numbers: List[int]):
+        for ss, row_num in zip(sub_scenarios, row_numbers):
+            row_output = workbook_outputs.get(row_num)
+            if not row_output:
+                continue
+            ss.fatalities = list(row_output.get("fatalities", ss.fatalities))
+            ss.fatalities_total = float(row_output.get("fatalities_total", ss.fatalities_total))
+
+    def _copy_fire_branch(dst: FireScenario, src: FireScenario):
+        dst.branch_label = src.branch_label
+        dst.scenario_id = src.scenario_id
+        dst.probability = src.probability
+        dst.freq_per_yr = src.freq_per_yr
+        dst.return_yr = src.return_yr
+        dst.freq_veh_km = src.freq_veh_km
+        if len(dst.sub_scenarios) == len(src.sub_scenarios):
+            for dss, sss in zip(dst.sub_scenarios, src.sub_scenarios):
+                dss.scenario_id = sss.scenario_id
+                dss.smoke_control = sss.smoke_control
+                dss.freq_per_yr = sss.freq_per_yr
+                dss.return_yr = sss.return_yr
+                dss.freq_veh_km = sss.freq_veh_km
+                dss.fatalities = list(sss.fatalities)
+                dss.vehicle_type = sss.vehicle_type
+                dss.traffic = sss.traffic
+                dss.ventilation = sss.ventilation
+                dss.wind = sss.wind
+                dss.fatalities_total = sss.fatalities_total
+
     # Passenger Car (PC)
     pc_p1n_subs = [
         SubScenario("PC1N", "NNVC", 7.99e-4, 1251.1, 2.8967e-10, [0] * 6, "PC Single", "Normal", "Vent OK", "0 m/s"),
@@ -371,14 +509,14 @@ def _build_standard_scenario_data() -> List[VehicleType]:
         SubScenario("020N", "NNV0", 1.608e-3, 621.9, 1.563e-8, [0] * 6, "Bus", "Normal", "Vent OK", "Critical wind"),
         SubScenario("020N", "NFV0", 6.693e-5, 14940.6, 6.504e-10, [0] * 6, "Bus", "Normal", "Vent Fail", "Natural wind: 0"),
         SubScenario("020N", "NFVM", 6.693e-5, 14940.6, 6.504e-10, [0] * 6, "Bus", "Normal", "Vent Fail", "Natural wind: -"),
-        SubScenario("020N", "NFVP", 6.693e-5, 14940.6, 6.504e-10, [0.117, 0, 0, 0, 0, 0.1], "Bus", "Normal", "Vent Fail", "Natural wind: +"),
+        SubScenario("020N", "NFVP", 6.693e-5, 14940.6, 6.504e-10, [0, 0, 0, 0, 0.1, 0.318], "Bus", "Normal", "Vent Fail", "Natural wind: +"),
     ]
     bus_bc_subs = [
         SubScenario("020C", "CNVC", 2.030e-6, 492547.3, 1.973e-11, [0] * 6, "Bus", "Congested", "Vent OK", "0 m/s"),
         SubScenario("020C", "CNV0", 1.624e-5, 61568.4, 1.578e-10, [0] * 6, "Bus", "Congested", "Vent OK", "Critical wind"),
-        SubScenario("020C", "CFV0", 6.761e-7, 1479121.2, 6.570e-12, [5.934, 30.2, 4.1, 1.1, 0, 0], "Bus", "Congested", "Vent Fail", "Natural wind: 0"),
-        SubScenario("020C", "CFVM", 6.761e-7, 1479121.2, 6.570e-12, [0.654, 1.3, 0.4, 0, 0, 0.2], "Bus", "Congested", "Vent Fail", "Natural wind: -"),
-        SubScenario("020C", "CFVP", 6.761e-7, 1479121.2, 6.570e-12, [0.151, 0, 0, 0, 0, 0.1], "Bus", "Congested", "Vent Fail", "Natural wind: +"),
+        SubScenario("020C", "CFV0", 6.761e-7, 1479121.2, 6.570e-12, [30.2, 4.1, 1.1, 0, 0, 3.559], "Bus", "Congested", "Vent Fail", "Natural wind: 0"),
+        SubScenario("020C", "CFVM", 6.761e-7, 1479121.2, 6.570e-12, [1.3, 0.4, 0, 0, 0.2, 1.222], "Bus", "Congested", "Vent Fail", "Natural wind: -"),
+        SubScenario("020C", "CFVP", 6.761e-7, 1479121.2, 6.570e-12, [0, 0, 0, 0, 0.1, 0.422], "Bus", "Congested", "Vent Fail", "Natural wind: +"),
     ]
 
     bus_normal = FireScenario("Normal", "BN", 0.2257, 2.010e-3, 497.5, 1.953e-8, bus_bn_subs)
@@ -410,18 +548,18 @@ def _build_standard_scenario_data() -> List[VehicleType]:
 
     # General Cargo Truck (GV)
     gv_gvn_subs = [
-        SubScenario("030N", "NNVC", 2.856e-5, 35020.1, 2.277e-9, [9.287, 0, 0, 0.7, 7.4, 28], "General Truck", "Normal", "Vent OK", "0 m/s"),
-        SubScenario("030N", "NNV0", 2.284e-4, 4377.5, 1.822e-8, [2.649, 15.3, 0.5, 0, 0, 0], "General Truck", "Normal", "Vent OK", "Critical wind"),
+        SubScenario("030N", "NNVC", 2.856e-5, 35020.1, 2.277e-9, [0, 0, 0.7, 7.4, 28, 13.569], "General Truck", "Normal", "Vent OK", "0 m/s"),
+        SubScenario("030N", "NNV0", 2.284e-4, 4377.5, 1.822e-8, [15.3, 0.5, 0, 0, 0, 1.590], "General Truck", "Normal", "Vent OK", "Critical wind"),
         SubScenario("030N", "NFV0", 9.509e-6, 105165.5, 7.582e-10, [0] * 6, "General Truck", "Normal", "Vent Fail", "Natural wind: 0"),
         SubScenario("030N", "NFVM", 9.509e-6, 105165.5, 7.582e-10, [0] * 6, "General Truck", "Normal", "Vent Fail", "Natural wind: -"),
-        SubScenario("030N", "NFVP", 9.509e-6, 105165.5, 7.582e-10, [2.833, 0, 0, 0, 0, 5.5], "General Truck", "Normal", "Vent Fail", "Natural wind: +"),
+        SubScenario("030N", "NFVP", 9.509e-6, 105165.5, 7.582e-10, [0, 0, 0, 0, 5.5, 6.424], "General Truck", "Normal", "Vent Fail", "Natural wind: +"),
     ]
     gv_gvc_subs = [
-        SubScenario("030C", "CNVC", 2.884e-7, 3466991.3, 2.30e-11, [6.672, 0, 0, 0.1, 2, 17.2], "General Truck", "Congested", "Vent OK", "0 m/s"),
+        SubScenario("030C", "CNVC", 2.884e-7, 3466991.3, 2.30e-11, [0, 0, 0.1, 2, 17.2, 12.496], "General Truck", "Congested", "Vent OK", "0 m/s"),
         SubScenario("030C", "CNV0", 2.307e-6, 433373.9, 1.840e-10, [0] * 6, "General Truck", "Congested", "Vent OK", "Critical wind"),
-        SubScenario("030C", "CFV0", 9.605e-8, 10411385.3, 7.659e-12, [42.66, 140.1, 85.6, 27.7, 1.1, 0], "General Truck", "Congested", "Vent Fail", "Natural wind: 0"),
-        SubScenario("030C", "CFVM", 9.605e-8, 10411385.3, 7.659e-12, [7.510, 21.9, 4.9, 0.3, 0.1, 3.5], "General Truck", "Congested", "Vent Fail", "Natural wind: -"),
-        SubScenario("030C", "CFVP", 9.605e-8, 10411385.3, 7.659e-12, [3.554, 0, 0, 0, 0.1, 6.3], "General Truck", "Congested", "Vent Fail", "Natural wind: +"),
+        SubScenario("030C", "CFV0", 9.605e-8, 10411385.3, 7.659e-12, [140.1, 85.6, 27.7, 1.1, 0, 25.568], "General Truck", "Congested", "Vent Fail", "Natural wind: 0"),
+        SubScenario("030C", "CFVM", 9.605e-8, 10411385.3, 7.659e-12, [21.9, 4.9, 0.3, 0.1, 3.5, 10.348], "General Truck", "Congested", "Vent Fail", "Natural wind: -"),
+        SubScenario("030C", "CFVP", 9.605e-8, 10411385.3, 7.659e-12, [0, 0, 0, 0.1, 6.3, 8.266], "General Truck", "Congested", "Vent Fail", "Natural wind: +"),
     ]
 
     gv_30_normal = FireScenario("Normal", "GVN", 0.3415, 2.856e-4, 3502.0, 2.277e-8, gv_gvn_subs)
@@ -477,18 +615,18 @@ def _build_standard_scenario_data() -> List[VehicleType]:
 
     # Special / Hazardous Cargo Truck (ST)
     st_stn_subs = [
-        SubScenario("100N", "NNVC", 8.013e-7, 1247921.1, 3.415e-10, [3.713, 2.1, 0.9, 0.5, 0.2, 0.9], "Special Truck", "Normal", "Vent OK", "0 m/s"),
+        SubScenario("100N", "NNVC", 8.013e-7, 1247921.1, 3.415e-10, [2.1, 0.9, 0.5, 0.2, 0.9, 9.499], "Special Truck", "Normal", "Vent OK", "0 m/s"),
         SubScenario("100N", "NNV0", 6.411e-6, 155990.1, 2.732e-9, [0] * 6, "Special Truck", "Normal", "Vent OK", "Critical wind"),
         SubScenario("100N", "NFV0", 2.668e-7, 3747510.7, 1.137e-10, [0] * 6, "Special Truck", "Normal", "Vent Fail", "Natural wind: 0"),
         SubScenario("100N", "NFVM", 2.668e-7, 3747510.7, 1.137e-10, [0] * 6, "Special Truck", "Normal", "Vent Fail", "Natural wind: -"),
-        SubScenario("100N", "NFVP", 2.668e-7, 3747510.7, 1.137e-10, [35.92, 0, 0, 3.0, 19, 67.6], "Special Truck", "Normal", "Vent Fail", "Natural wind: +"),
+        SubScenario("100N", "NFVP", 2.668e-7, 3747510.7, 1.137e-10, [0, 0, 3.0, 19, 67.6, 73.216], "Special Truck", "Normal", "Vent Fail", "Natural wind: +"),
     ]
     st_stc_subs = [
-        SubScenario("100C", "CNVC", 8.094e-9, 123544184.5, 3.45e-12, [9.181, 8.3, 2.2, 0.9, 1.0, 1.6], "Special Truck", "Congested", "Vent OK", "0 m/s"),
-        SubScenario("100C", "CNV0", 6.475e-8, 15443023.1, 2.76e-11, [6.052, 0, 0, 0.5, 3.3, 10.9], "Special Truck", "Congested", "Vent OK", "Critical wind"),
-        SubScenario("100C", "CFV0", 2.695e-9, 371003557.0, 1.149e-12, [135.0, 309.2, 222.3, 173.2, 86.8, 14.1], "Special Truck", "Congested", "Vent Fail", "Natural wind: 0"),
-        SubScenario("100C", "CFVM", 2.695e-9, 371003557.0, 1.149e-12, [94.66, 119.2, 114, 78.9, 75.6, 85], "Special Truck", "Congested", "Vent Fail", "Natural wind: -"),
-        SubScenario("100C", "CFVP", 2.695e-9, 371003557.0, 1.149e-12, [54.33, 0, 0, 2, 49.3, 128.4], "Special Truck", "Congested", "Vent Fail", "Natural wind: +"),
+        SubScenario("100C", "CNVC", 8.094e-9, 123544184.5, 3.45e-12, [8.3, 2.2, 0.9, 1.0, 1.6, 22.402], "Special Truck", "Congested", "Vent OK", "0 m/s"),
+        SubScenario("100C", "CNV0", 6.475e-8, 15443023.1, 2.76e-11, [0, 0, 0.5, 3.3, 10.9, 12.498], "Special Truck", "Congested", "Vent OK", "Critical wind"),
+        SubScenario("100C", "CFV0", 2.695e-9, 371003557.0, 1.149e-12, [309.2, 222.3, 173.2, 86.8, 14.1, 80.821], "Special Truck", "Congested", "Vent Fail", "Natural wind: 0"),
+        SubScenario("100C", "CFVM", 2.695e-9, 371003557.0, 1.149e-12, [119.2, 114, 78.9, 75.6, 85, 94.874], "Special Truck", "Congested", "Vent Fail", "Natural wind: -"),
+        SubScenario("100C", "CFVP", 2.695e-9, 371003557.0, 1.149e-12, [0, 0, 2, 49.3, 128.4, 92.425], "Special Truck", "Congested", "Vent Fail", "Natural wind: +"),
     ]
 
     st_100_normal = FireScenario("Normal", "STN", 0.3415, 8.013e-6, 124792.1, 2.277e-8, st_stn_subs)
@@ -541,6 +679,24 @@ def _build_standard_scenario_data() -> List[VehicleType]:
             )
         ],
     )
+
+    _apply_workbook_outputs(pc_p1n_subs, [10, 11, 12, 13, 14])
+    _apply_workbook_outputs(pc_p1c_subs, [15, 16, 17, 18, 19])
+    _apply_workbook_outputs(pc_p2n_subs, [20, 21, 22, 23, 24])
+    _apply_workbook_outputs(pc_p2c_subs, [25, 26, 27, 28, 29])
+    _apply_workbook_outputs(bus_bn_subs, [30, 31, 32, 33, 34])
+    _apply_workbook_outputs(bus_bc_subs, [35, 36, 37, 38, 39])
+    _apply_workbook_outputs(gv_gvn_subs, [40, 41, 42, 43, 44])
+    _apply_workbook_outputs(gv_gvc_subs, [45, 46, 47, 48, 49])
+    _apply_workbook_outputs(st_stn_subs, [50, 51, 52, 53, 54])
+    _apply_workbook_outputs(st_stc_subs, [55, 56, 57, 58, 59])
+
+    # Alias branches were cloned before workbook outputs were applied; refresh
+    # them now so any downstream consumers see the same workbook-backed values.
+    _copy_fire_branch(gv_20_normal, bus_normal)
+    _copy_fire_branch(gv_20_congest, bus_congest)
+    _copy_fire_branch(st_30_normal, gv_30_normal)
+    _copy_fire_branch(st_30_congest, gv_30_congest)
 
     return [pc, bus, gv, st]
 
@@ -683,16 +839,22 @@ class EventTreeDiagram(QWidget):
         return (min(ys) + max(ys)) / 2.0
 
     def _fmt_e(self, v: float) -> str:
+        """Format frequency/yr as 0.00E+00 (2-decimal scientific, matches Excel K/Q column format)."""
         if v == 0:
-            return "0.0000"
-        exp = int(math.floor(math.log10(abs(v))))
-        mant = v / (10 ** exp)
-        return f"{mant:.4f}E{exp:+d}"
+            return "0.00E+00"
+        return f"{v:.2E}"
+
+    def _fmt_e3(self, v: float) -> str:
+        """Format freq/veh-km as 0.000E+00 (3-decimal scientific, matches Excel M column format)."""
+        if v == 0:
+            return "0.000E+00"
+        return f"{v:.3E}"
 
     def _fmt_ret(self, v: float) -> str:
+        """Format return year as #,##0.0 (1 decimal with thousands separator, matches Excel L/R column format)."""
         if v == 0:
             return "-"
-        return f"{v:,.4f}"
+        return f"{v:,.1f}"
 
     def _fmt_pct(self, v: float, decimals: int = 4) -> str:
         """Format percentage and trim trailing zeros (e.g., 60.0000 -> 60)."""
@@ -948,7 +1110,7 @@ class EventTreeDiagram(QWidget):
                 for col, value in (
                     ("freq_yr", self._fmt_e(vt.not_serious_freq_yr)),
                     ("return_yr", self._fmt_ret(vt.not_serious_return_yr)),
-                    ("freq_vkm", self._fmt_e(vt.not_serious_freq_veh_km)),
+                    ("freq_vkm", self._fmt_e3(vt.not_serious_freq_veh_km)),
                 ):
                     p.setPen(QPen(QColor("#2C3E50")))
                     p.setFont(self._font(8))
@@ -1096,7 +1258,7 @@ class EventTreeDiagram(QWidget):
                     for col, value in (
                         ("freq_yr", self._fmt_e(br.freq_per_yr)),
                         ("return_yr", self._fmt_ret(br.return_yr)),
-                        ("freq_vkm", self._fmt_e(br.freq_veh_km)),
+                        ("freq_vkm", self._fmt_e3(br.freq_veh_km)),
                     ):
                         p.setPen(QPen(QColor("#2C3E50")))
                         p.setFont(self._font(8))
@@ -1173,6 +1335,7 @@ class ScenarioDetailTable(QTableWidget):
         "Frequency/Yr",
         "Return Year",
         "Freq /yrVeh-km",
+        "Fetalities\n(명/건)",
         "P1",
         "P2",
         "P3",
@@ -1180,12 +1343,19 @@ class ScenarioDetailTable(QTableWidget):
         "P5",
         "P6",
     ]
+    # Column widths (px): Scenario ID, Smoke, Freq/yr, Return Yr, Freq/veh-km,
+    #                      Fetalities, P1, P2, P3, P4, P5, P6
+    COL_WIDTHS = [65, 52, 72, 92, 78, 72, 65, 65, 65, 65, 65, 65]
 
-    def __init__(self, parent=None):
+    def __init__(self, fire_size_factors: Optional["FireSizeWorkbookFactors"] = None, parent=None):
         super().__init__(0, len(self.HEADERS), parent)
+        self._fire_size_factors: "FireSizeWorkbookFactors" = (
+            fire_size_factors if fire_size_factors is not None else FireSizeWorkbookFactors.default()
+        )
         self.setHorizontalHeaderLabels(self.HEADERS)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.horizontalHeader().setStretchLastSection(False)
+        hdr = self.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.Stretch)
+        hdr.setStretchLastSection(False)
         self.setAlternatingRowColors(True)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1214,9 +1384,10 @@ class ScenarioDetailTable(QTableWidget):
         return item
 
     def _fmt(self, v: float) -> str:
+        """Format frequency columns as 0.00E+00 (2-decimal scientific, matches Excel Q/S column format)."""
         if v == 0:
-            return "0.0000"
-        return f"{v:.4E}"
+            return "0.00E+00"
+        return f"{v:.2E}"
 
     def repopulate(self, data: List[VehicleType]):
         self.setRowCount(0)
@@ -1239,15 +1410,22 @@ class ScenarioDetailTable(QTableWidget):
                 self.insertRow(row)
                 bg = QColor("#F5F5F5")
                 self.setItem(row, 0, self._ci(vt.not_serious_id, bg, True))
-                self.setItem(row, 1, self._ci("Not Serious", bg))
-                self.setItem(row, 2, self._ci(self._fmt(vt.not_serious_freq_yr), bg))
-                self.setItem(row, 3, self._ci(f"{vt.not_serious_return_yr:.4f}" if vt.not_serious_return_yr > 0 else "-", bg))
-                self.setItem(row, 4, self._ci(self._fmt(vt.not_serious_freq_veh_km), bg))
+                self.setItem(row, 1, self._ci("Not Serious"))
+                self.setItem(row, 2, self._ci(self._fmt(vt.not_serious_freq_yr)))
+                self.setItem(row, 3, self._ci(f"{vt.not_serious_return_yr:,.1f}" if vt.not_serious_return_yr > 0 else "-"))
+                self.setItem(row, 4, self._ci(self._fmt(vt.not_serious_freq_veh_km)))
+                self.setItem(row, 5, self._ci("0.00"))
                 for i in range(6):
-                    self.setItem(row, 5 + i, self._ci("0.0000", bg))
+                    self.setItem(row, 6 + i, self._ci("0.0000"))
                 row += 1
 
             for ft in vt.fire_types:
+                # Skip alias fire types (e.g. GV 20 MW → Bus, ST 30 MW → GV).
+                # These duplicate the parent vehicle's sub-scenarios and
+                # correspond to rows 33-42 (GV alias) and 53-62 (ST alias)
+                # in the original 72-row table.
+                if ft.alias_to is not None:
+                    continue
                 for br in (ft.normal, ft.congest):
                     if br is None:
                         continue
@@ -1266,14 +1444,22 @@ class ScenarioDetailTable(QTableWidget):
                             # Scenario ID is a parent row label; smoke controls are sub-rows beneath it.
                             sid_text = ss.scenario_id if idx_in_group == 0 else ""
                             self.setItem(row, 0, self._ci(sid_text, bg, True))
-                            self.setItem(row, 1, self._ci(ss.smoke_control, bg))
-                            self.setItem(row, 2, self._ci(self._fmt(ss.freq_per_yr), bg))
-                            self.setItem(row, 3, self._ci(f"{ss.return_yr:.4f}" if ss.return_yr > 0 else "-", bg))
-                            self.setItem(row, 4, self._ci(self._fmt(ss.freq_veh_km), bg))
+                            self.setItem(row, 1, self._ci(ss.smoke_control))
+                            self.setItem(row, 2, self._ci(self._fmt(ss.freq_per_yr)))
+                            self.setItem(row, 3, self._ci(f"{ss.return_yr:,.1f}" if ss.return_yr > 0 else "-"))
+                            self.setItem(row, 4, self._ci(self._fmt(ss.freq_veh_km)))
+                            # Col 5: Fetalities (명/건) = _rp1*P1+...+_rp6*P6
+                            total_fat = ss.fatalities_total
+                            if total_fat == 0.0 and ss.fatalities:
+                                rp = self._fire_size_factors.rp_weights
+                                total_fat = sum(r * p for r, p in zip(rp, ss.fatalities))
+                            fat_bg = QColor("#FFCDD2") if total_fat > 0 else None
+                            self.setItem(row, 5, self._ci(f"{total_fat:.2f}" if total_fat > 0 else "0.00", fat_bg, bold=total_fat > 0))
+                            # Cols 6-11: P1-P6 = fatalities[0-5] (all original P columns)
                             for fidx, fv in enumerate(ss.fatalities):
                                 hi = fv > 0
-                                cell_bg = QColor("#FFCDD2") if hi else bg
-                                self.setItem(row, 5 + fidx, self._ci(f"{fv:.4f}" if hi else "0.0000", cell_bg, hi))
+                                cell_bg = QColor("#FFCDD2") if hi else None
+                                self.setItem(row, 6 + fidx, self._ci(f"{fv:.4f}" if hi else "0.0000", cell_bg, hi))
                             row += 1
 
                         if len(ss_group) > 1:
@@ -1374,12 +1560,25 @@ class StandardScenarioWidget(QWidget):
             src_smoke = factor_payload.get("smoke_probs") or {}
             _smoke = dict(src_smoke) if src_smoke else dict(self._fire_size_factors.smoke_probs)
 
+            # Recompute rp_weights using the asymmetric fire placement formula
+            # when tunnel geometry parameters are available in the payload.
+            _tl = float(factor_payload.get("tunnel_length_m") or 0.0)
+            _nf = int(factor_payload.get("n_fire") or 6)
+            _ref = float(factor_payload.get("ran_evc_fire") or 25.0)
+            if _tl > _ref:
+                _rp_weights = calculate_fire_positions_and_rp(
+                    _tl, n_fire=_nf, ran_evc_fire=_ref
+                )["rp_weights"]
+            else:
+                _rp_weights = list(self._fire_size_factors.rp_weights)
+
             self._fire_size_factors = FireSizeWorkbookFactors(
                 base=base,
                 vk_pc=vk_pc,
                 vk_hrr=vk_hrr,
                 lfr=lfr,
                 smoke_probs=_smoke,
+                rp_weights=_rp_weights,
             )
 
             # Delay Frequency from Tunnel Traffic Volume tab (e.g. D22 / 지체빈도)
@@ -1403,6 +1602,46 @@ class StandardScenarioWidget(QWidget):
             self._apply_controls_and_recalculate()
         except Exception:
             return
+
+    def set_fatalities_from_evc_map(self, scenario_p_map: Dict[Tuple[str, str], List[float]]):
+        """Update scenario P1-P6 from live EVC result map.
+
+        Parameters
+        ----------
+        scenario_p_map:
+            Dict keyed by (scenario_id, smoke_control), e.g. ('100N','NFVM'),
+            whose value is [P1..P6] fatalities (one per fire position).
+        """
+        if not isinstance(scenario_p_map, dict) or not scenario_p_map:
+            return
+
+        changed = False
+        rp = list(self._fire_size_factors.rp_weights)
+        if len(rp) < 6:
+            rp = rp + [0.0] * (6 - len(rp))
+
+        for vt in self._data:
+            for ft in vt.fire_types:
+                for br in (ft.normal, ft.congest):
+                    if br is None:
+                        continue
+                    for ss in br.sub_scenarios:
+                        key = ((ss.scenario_id or "").upper(), (ss.smoke_control or "").upper())
+                        pvals = scenario_p_map.get(key)
+                        if pvals is None:
+                            continue
+
+                        vals = [float(v or 0.0) for v in list(pvals)[:6]]
+                        if len(vals) < 6:
+                            vals.extend([0.0] * (6 - len(vals)))
+
+                        if vals != list(ss.fatalities):
+                            ss.fatalities = vals
+                            ss.fatalities_total = sum(r * p for r, p in zip(rp, vals))
+                            changed = True
+
+        if changed:
+            self._refresh_views()
 
     def _case_per_year_factor(self, vt: VehicleType) -> float:
         """Case/Yr per ACCR based on workbook equations.
@@ -1553,7 +1792,7 @@ class StandardScenarioWidget(QWidget):
             "font-size:11px;font-weight:bold;color:#2c3e50;padding:3px 6px;background:#ecf0f1;border-radius:2px;"
         )
         detail_layout.addWidget(detail_hdr)
-        self._detail_tbl = ScenarioDetailTable()
+        self._detail_tbl = ScenarioDetailTable(self._fire_size_factors)
         min_table_h = self._detail_tbl.min_height_for_rows(8)
         self._detail_tbl.setMinimumHeight(min_table_h)
         detail_layout.addWidget(self._detail_tbl, 1)
@@ -1720,6 +1959,7 @@ class StandardScenarioWidget(QWidget):
         dst.traffic = src.traffic
         dst.ventilation = src.ventilation
         dst.wind = src.wind
+        dst.fatalities_total = src.fatalities_total
 
     def _copy_fire_scenario(self, dst: FireScenario, src: FireScenario):
         dst.branch_label = src.branch_label
@@ -1942,11 +2182,41 @@ class StandardScenarioWidget(QWidget):
                     br.freq_veh_km = (br.freq_per_yr / vk_denom) if vk_denom > 0.0 else 0.0
 
                     for ss in br.sub_scenarios:
-                        # Spreadsheet Q column: sub_freq = branch_K * NNVC/NNV0/NFF*WVx etc.
                         sp = self._fire_size_factors.smoke_probs.get(ss.smoke_control, 0.0)
-                        ss.freq_per_yr = br.freq_per_yr * sp
+                        is_nv = ss.smoke_control in ("CNV0", "CNVC", "NNV0", "NNVC")
+                        if is_nv:
+                            # Respect Tunnel Traffic Volume gate values for NV branches.
+                            # If upstream NVC/NV0 is zero, this scenario must be zero.
+                            if sp <= 0.0:
+                                ss.freq_per_yr = 0.0
+                                ss.return_yr = 0.0
+                                ss.freq_veh_km = 0.0
+                                continue
+                            # No-vent (NV0/NVC) branches are NOT derived from the
+                            # fan/wind smoke-control fraction. In VB the live
+                            # Raw_Senario NV frequencies come from the engine
+                            # directly; the 표준시나리오 Q-column NV path uses the
+                            # CNV0/CNVC/NNV0/NNVC named ranges, which are zeroed in
+                            # many workbooks — a DISABLED duplicate path, not the
+                            # live one. Multiplying by that zeroed fraction (the
+                            # previous behaviour) wrongly forced NV frequencies to
+                            # 0 while their EQ-Fatal stayed non-zero.
+                            #
+                            # Faithful behaviour: derive the NV leaf frequency from
+                            # the captured template ratio (sub_freq / branch_freq
+                            # at load time, before any workbook override), scaled
+                            # by this branch's recomputed frequency. This preserves
+                            # the NV proportion the engine produced.
+                            w = self._coeff.get("sub_weight", {}).get(id(ss))
+                            if w is None:
+                                w = sp  # last resort: original behaviour
+                            ss.freq_per_yr = br.freq_per_yr * w
+                        else:
+                            # Fan-active (FV0/FVM/FVP): leaf = branch × smoke frac.
+                            ss.freq_per_yr = br.freq_per_yr * sp
                         ss.return_yr = _safe_return_year(ss.freq_per_yr)
                         ss.freq_veh_km = (ss.freq_per_yr / vk_denom) if vk_denom > 0.0 else 0.0
+
 
         self._refresh_views()
 

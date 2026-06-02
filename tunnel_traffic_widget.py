@@ -420,8 +420,12 @@ class TunnelTrafficWidget(QWidget):
                 # Set display value (formula cells show computed values)
                 item.setText(self._display_value_for_cell(cell['coordinate']))
                 
-                # Set color
-                if color and color in COLOR_MAP:
+                # Set color — is_editable=True cells are always rendered blue
+                # regardless of the color stored in JSON (handles regen resets).
+                if is_editable:
+                    item.setBackground(QBrush(QColor(0, 176, 240)))   # FF00B0F0 blue
+                    item.setForeground(QBrush(QColor(255, 255, 255)))
+                elif color and color in COLOR_MAP:
                     bg_color = COLOR_MAP[color]
                     item.setBackground(QBrush(bg_color))
                     
@@ -1326,6 +1330,94 @@ class TunnelTrafficWidget(QWidget):
 
         return float(self._coerce_number(cell.get("value")) or 0.0)
 
+    def set_traffic_volume_cells(self, plus_dir: List[Any], occupants: List[Any]) -> None:
+        """Auto-populate E8:K8 (+Dir) and E11:K11 (Occupants) from the
+        Traffic Volume & Vehicle Specs table in EVC/FED Analysis → Tunnel Info.
+
+        Both arguments must be 7-element sequences ordered by vehicle type
+        (Car, Small Bus, Large Bus, Small Truck, Med Truck, Large Truck, Special)
+        matching columns E through K of the tunnel traffic sheet.
+        """
+        COORDS_ROW8  = ['E8',  'F8',  'G8',  'H8',  'I8',  'J8',  'K8']
+        COORDS_ROW11 = ['E11', 'F11', 'G11', 'H11', 'I11', 'J11', 'K11']
+
+        def _coerce(v: Any) -> float:
+            try:
+                return float(str(v).strip())
+            except (TypeError, ValueError):
+                return 0.0
+
+        updates: Dict[str, float] = {}
+        for coord, val in zip(COORDS_ROW8,  plus_dir):
+            updates[coord] = _coerce(val)
+        for coord, val in zip(COORDS_ROW11, occupants):
+            updates[coord] = _coerce(val)
+
+        self._updating_table = True
+        try:
+            for coord, val in updates.items():
+                cell = self.cells_by_coord.get(coord)
+                if cell is None:
+                    continue
+                cell['value'] = val
+                cell['manual_override'] = True
+                row_idx = cell['row'] - 1
+                col_idx = cell['col'] - 1
+                item = self.table.item(row_idx, col_idx)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.table.setItem(row_idx, col_idx, item)
+                item.setText(self._format_value(val))
+        finally:
+            self._updating_table = False
+
+        self._refresh_formula_cells()
+        self._emit_precalculated_values()
+
+    def set_tunnel_info_cells(self, length_m: float, gradient: float, perimeter: float) -> None:
+        """Auto-populate tunnel geometry cells from the Tunnel Info panel.
+
+        Mappings:
+          D3 ← length_m / 1000  (tunnel length in km)
+          G3 ← gradient         (slope %)
+          J3 ← perimeter        (cross-section perimeter, m)
+        """
+        try:
+            length_km = round(float(length_m) / 1000.0, 6) if length_m else 0.0
+        except (TypeError, ValueError):
+            length_km = 0.0
+        try:
+            grad_val = float(gradient)
+        except (TypeError, ValueError):
+            grad_val = 0.0
+        try:
+            perim_val = float(perimeter)
+        except (TypeError, ValueError):
+            perim_val = 0.0
+
+        updates = {'D3': length_km, 'G3': grad_val, 'J3': perim_val}
+
+        self._updating_table = True
+        try:
+            for coord, val in updates.items():
+                cell = self.cells_by_coord.get(coord)
+                if cell is None:
+                    continue
+                cell['value'] = val
+                cell['manual_override'] = True
+                row_idx = cell['row'] - 1
+                col_idx = cell['col'] - 1
+                item = self.table.item(row_idx, col_idx)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.table.setItem(row_idx, col_idx, item)
+                item.setText(self._format_value(val))
+        finally:
+            self._updating_table = False
+
+        self._refresh_formula_cells()
+        self._emit_precalculated_values()
+
     def get_standard_scenario_factors(self) -> Dict[str, Any]:
         """Build Standard Scenario fire-size factors from tunnel-sheet calculated cells.
 
@@ -1364,10 +1456,19 @@ class TunnelTrafficWidget(QWidget):
             "CFV0": cff * wv0, "CFVM": cff * wvr, "CFVP": cff * wvp,
         }
 
+        # Tunnel geometry for asymmetric fire placement formula (_rp weights)
+        tunnel_length_km = self._numeric_cell_value("D3")
+        tunnel_length_m = tunnel_length_km * 1000.0 if tunnel_length_km > 0 else 0.0
+        n_fire = int(self._numeric_cell_value("G68") or 6)
+        ran_evc_fire = self._numeric_cell_value("K68") or 25.0
+
         factors = {
             "base": base,
             "vk_pc": vk_pc,
             "delay_frequency": delay_frequency,
+            "tunnel_length_m": tunnel_length_m,
+            "n_fire": n_fire,
+            "ran_evc_fire": ran_evc_fire,
             "vk_hrr": {
                 10: vk_pc,
                 20: vk_hrr20,
