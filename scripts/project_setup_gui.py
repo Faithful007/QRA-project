@@ -37,6 +37,7 @@ class DirectoryCreationThread(QThread):
                 "ascii_files",
                 "evc_files",
                 "fed_results",
+                "graphs",
                 "logs"
             ]
             
@@ -311,6 +312,10 @@ class ProjectSetupGUI(QMainWindow):
             # FED Results
             fed_results = QTreeWidgetItem(root)
             fed_results.setText(0, "fed_results/  # FED analysis results and reports")
+
+            # Graphs
+            graphs = QTreeWidgetItem(root)
+            graphs.setText(0, "graphs/  # Charts and visualization outputs")
 
             # Logs
             logs = QTreeWidgetItem(root)

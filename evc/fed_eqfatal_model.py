@@ -98,11 +98,15 @@ O2_AMBIENT    = 20.72       # the 20.721 constant ~ O2 baseline -> depletion for
 
 # Guards — from the full FUN_004956e0 listing (MOV.txt), cross-checked vs .SET
 CO_GUARD      = 0.0         # CO term active when CO != 0  (guard: CO != 0)
-HEAT_GUARD_HI = 40.0        # heat term active when T < 40 (guard: 40 > T).
-                            # NOTE: heat SWITCHES OFF above 40C — a real, surprising
-                            # binary behavior. In 020 scenario T maxes ~36C so the term
-                            # is always on; a hotter scenario exposes the cutoff.
-                            # Validated R2=0.76 vs SET FED4.
+HEAT_GUARD_LO = 40.0        # heat term active when T > 40 degC.
+                            # GUARD SENSE CORRECTED (June 2026): the decompile loads
+                            # INTEGER 40 (0x28, VT_I2) and the exp block sits inside
+                            # `If Temp > 40 Then` (FUN_004956E0 / FUN_00497950). The
+                            # earlier `T < 40` reading was inverted; it gave every
+                            # cool-air occupant a spurious ~0.01/min dose and zeroed
+                            # the hot-zone dose, compressing the FED distribution.
+                            # Purser's ~40 degC convective threshold and the polarised
+                            # VB output distribution both agree with T > 40.
 
 # .SET / FDB conventions confirmed from the files
 SET_COL = {  # 0-based column indices in the .SET row
@@ -132,8 +136,8 @@ def fed_rate(co_ppm, co2_pct, temp_c, o2_pct=None,
         rmv = rmv / CO_RMV_DIV
     r_co = np.where(co != CO_GUARD, (co ** CO_CONC_POW) / CO_DOSE_DIV * rmv, 0.0)
 
-    # HEAT (FED4): exp(0.0273*T - 5.1849), active when T < 40 (binary guard 40>T)
-    r_heat = np.where(T < HEAT_GUARD_HI, np.exp(HEAT_SLOPE * T - HEAT_SUB), 0.0)
+    # HEAT (FED4): exp(0.0273*T - 5.1849), active when T > 40 (If Temp > 40 Then)
+    r_heat = np.where(T > HEAT_GUARD_LO, np.exp(HEAT_SLOPE * T - HEAT_SUB), 0.0)
 
     out = {"FED_CO": r_co, "FED_heat": r_heat}
 

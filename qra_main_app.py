@@ -204,7 +204,9 @@ def get_evc_generator():
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fire position + RP weights helper
-# Source: 터널교통량등제원, row 73, cols F:R
+# Source: 터널교통량등제원, row 73:
+#   - fire mapping in F73:L73
+#   - RP(1..6) weights in M73:R73
 # ─────────────────────────────────────────────────────────────────────────────
 def tunnel_fire_positions_and_rp(
     tunnel_length_m: float,
@@ -213,8 +215,8 @@ def tunnel_fire_positions_and_rp(
     num_fire_points: int = 6,
 ) -> dict:
     """
-    Reproduces the Excel logic from:
-    터널교통량등제원!D73:R73
+    Reproduces the asymmetric Excel logic from:
+    터널교통량등제원!F73:L73 (fire points), M73:R73 (RP1..RP6)
 
     Parameters
     ----------
@@ -237,7 +239,12 @@ def tunnel_fire_positions_and_rp(
             "rp_percent": [...]
         }
     """
-    usable_length = exit_position_m - excluded_end_region_m
+    # Excel-verified asymmetric placement uses the effective tunnel span
+    # for sectioning. If an exit-derived span is shorter than TL, use TL.
+    effective_span_m = max(float(tunnel_length_m or 0.0), float(exit_position_m or 0.0))
+    usable_length = effective_span_m - excluded_end_region_m
+    if usable_length <= 0:
+        usable_length = max(effective_span_m, 0.0)
     spacing = usable_length / num_fire_points
 
     fire_positions = [
@@ -262,7 +269,8 @@ def tunnel_fire_positions_and_rp(
                 (fire_positions[i] - fire_positions[i - 1]) / 2
                 + (fire_positions[i + 1] - fire_positions[i]) / 2
             )
-        rp_values.append(round((rp_length / tunnel_length_m) * 100, 1))
+        # Keep workbook-level precision for row M73:R73 percentages.
+        rp_values.append(round((rp_length / tunnel_length_m) * 100, 2))
 
     return {
         "spacing_m": round(spacing, 1),
@@ -4947,8 +4955,12 @@ class QRAMainWindow(QMainWindow):
             if _id == 0:   # symmetric — formula always uses 6 fire points
                 self.evc_num_fp_s4.setValue(6)
                 self.evc_num_fp_s4.setEnabled(False)
+                # Auto-calculate fire-point mapping immediately for symmetric mode.
+                self._calc_evc_zone_fire_points(_skip_exits=True)
             else:          # asymmetric — user can set fire-points-per-zone freely
                 self.evc_num_fp_s4.setEnabled(True)
+                # Auto-calculate fire-point mapping immediately for asymmetric mode.
+                self._calc_evc_asymmetric_fire_points()
             # Immediately push the matching RP weights to the Results tab
             self._apply_rp_for_mode(is_asymmetric=(_id == 1))
 
@@ -4982,18 +4994,20 @@ class QRAMainWindow(QMainWindow):
                 22 * vis + self.evc_fpm_table_s4.horizontalHeader().height() + 4)
         _resize_fpm_table()
 
-        def _sync_mdb_from_fire(tbl, row):
-            """Mirror Fire pt. X value into MDB pt. X for the given row."""
-            fire_itm = tbl.item(row, 1)
-            mdb_itm  = tbl.item(row, 2)
-            if fire_itm is None:
-                return
-            fire_val = fire_itm.text().strip()
-            if mdb_itm is None:
-                mdb_itm = QTableWidgetItem("")
-                mdb_itm.setTextAlignment(Qt.AlignCenter)
-                tbl.setItem(row, 2, mdb_itm)
-            mdb_itm.setText(fire_val)
+        # ── MDB pt. X determination (VB parity) ──────────────────────────
+        # VB does NOT mirror Fire pt. X into MDB pt. X.  The decompiled
+        # auto-fill routine (now1.txt) walks the loaded fire-database list
+        # and, for each fire-point row, assigns the X of the DB whose fire
+        # location matches that point's zone — i.e. MDB pt. X is the fire
+        # location OF THE DATABASE (the FDB header's "FIRE PT" field, e.g.
+        # the midpoint of "317.000- 323.000" = 320), not the EVC fire point.
+        # The engine then anchors the smoke field by translating
+        #     x_db = x_evc + (MDB_pt − Fire_pt)
+        # so the DB plume tracks the scenario fire.  Mirroring made the
+        # shift zero, parking the smoke at the FDB's native location for
+        # every position — the direct mechanism behind per-position fatality
+        # patterns collapsing onto one end of the tunnel.
+        # See _autofill_mdb_pt_x() for the implementation.
 
         def _on_num_fp_changed(new_count):
             tbl = self.evc_fpm_table_s4
@@ -5036,17 +5050,11 @@ class QRAMainWindow(QMainWindow):
                 QMessageBox.warning(self, 'Invalid Input',
                     f'"{txt}" is not a valid number. Please enter a numeric value.')
                 return
-            # When Fire pt. X (col 1) changes, mirror value into MDB pt. X (col 2)
+            # VB parity: when Fire pt. X (col 1) changes, MDB pt. X is
+            # re-determined from the loaded fire database(s) — NOT mirrored.
+            # Manual edits to col 2 itself are left untouched.
             if col == 1:
-                tbl.blockSignals(True)
-                mdb_itm = tbl.item(row, 2)
-                if mdb_itm is None:
-                    mdb_itm = QTableWidgetItem("")
-                    mdb_itm.setTextAlignment(Qt.AlignCenter)
-                    tbl.setItem(row, 2, mdb_itm)
-                mdb_itm.setText(txt)
-                mdb_itm.setBackground(QColor('white'))
-                tbl.blockSignals(False)
+                self._autofill_mdb_pt_x(only_row=row)
         self.evc_fpm_table_s4.cellChanged.connect(_on_fpm_s4_changed)
         fpm_vl.addWidget(self.evc_fpm_table_s4)
         fpm_fn_split.addWidget(fpm_grp, stretch=1)
@@ -5625,6 +5633,7 @@ class QRAMainWindow(QMainWindow):
         Also extracts FIRE PT from matched FDBs → MDB pt. X (yellow).
         """
         import os
+        import re as _re_mod
         from pathlib import Path
 
         proj = self.evc_s4_proj_folder.text().strip() or (self.project_dir or "")
@@ -5658,15 +5667,36 @@ class QRAMainWindow(QMainWindow):
             unique_fdb.sort(key=lambda f: (str(f.parent).lower(), f.stem.lower()))
 
         # ── 3. EVC → FDB matcher ──────────────────────────────────────────────
+        # 🔧 SCENARIO-SAFE MATCHING: the wind condition lives ENTIRELY in the
+        # FDB (FVM/FVP decks are byte-identical; 020CFVM.FDB ≠ 020CFVP.FDB),
+        # so borrowing a different wind's database silently runs the wrong
+        # physics. The old common-prefix fallback (≥4 chars) did exactly
+        # that: '020cfvm' matched '020cfvp' via prefix '020cfv'. Now a
+        # fallback match is accepted ONLY if both stems carry the same
+        # (HRR, traffic, wind) scenario signature; otherwise the row is
+        # marked unmatched (pink) so the missing database is visible
+        # instead of silently substituted.
+        _sig_re = _re_mod.compile(
+            r'(PC1|PC2|SMB|SMT|020|030|100)\s*([NC])\s*(NVC|NV0|FV0|FVM|FVP)',
+            _re_mod.IGNORECASE)
+
+        def _scenario_sig(stem):
+            m = _sig_re.search(stem)
+            return (m.group(1).upper(), m.group(2).upper(),
+                    m.group(3).upper()) if m else None
+
         def _match_fdb(ep):
             s = ep.stem.lower()
             if s in fdb_by_stem: return fdb_by_stem[s]
             b = s.rsplit("_p", 1)[0] if "_p" in s else s
             if b in fdb_by_stem: return fdb_by_stem[b]
+            evc_sig = _scenario_sig(s)
             best = None; bl = 0
             for fs, fp in fdb_by_stem.items():
-                cl = len(os.path.commonprefix([s, fs]))
-                if cl > bl: bl = cl; best = fp
+                if evc_sig is not None and _scenario_sig(fs) != evc_sig:
+                    continue   # never cross wind/traffic/HRR
+                cl = os.path.commonprefix([s, fs])
+                if len(cl) > bl: bl = len(cl); best = fp
             return best if bl >= 4 else None
 
         # ── 4. Populate table ─────────────────────────────────────────────────
@@ -6141,10 +6171,20 @@ class QRAMainWindow(QMainWindow):
                     if sum(_mix_rate) == 0:
                         _mix_rate = None                 # let engine use uniform fallback
 
-                    # occ_per_veh — evac_veh_table col 3 "Occupants" (Tab4 Sub-tab2)
-                    _n_evac_rows = self.evac_veh_table.rowCount()
-                    _occ_per_veh = [_evac_float(r, 3, default=1.5)
-                                    for r in range(_n_evac_rows)]
+                    # occ_per_veh — 🔧 VB-PARITY: the Tunnel Info "Occupants"
+                    # row (승차인원, tbi_veh_table row 6) is the single
+                    # authoritative source, matching VB where EVC L52–L58 come
+                    # straight from the 터널교통량등제원 occupant row. The
+                    # evac_veh_table col-3 values are only a FALLBACK when the
+                    # Tunnel Info row is empty — previously they silently
+                    # overrode Tunnel Info (with a 1.5/car default), so
+                    # entering 3/8/30/2/2/1/1 in Tunnel Info had no effect on
+                    # the simulated evacuee count.
+                    _occ_per_veh = [_tbi_float(6, c) for c in range(VT_c)]
+                    if not any(v > 0 for v in _occ_per_veh):
+                        _n_evac_rows = self.evac_veh_table.rowCount()
+                        _occ_per_veh = [_evac_float(r, 3, default=1.5)
+                                        for r in range(_n_evac_rows)]
                     if not any(v > 0 for v in _occ_per_veh):
                         _occ_per_veh = None              # all zeros → ignore
 
@@ -6169,6 +6209,10 @@ class QRAMainWindow(QMainWindow):
                     _engine = EVCEngine(
                         evc_full_path, fdb_full_path,
                         n_occ_override       = None,
+                        # 🔧 VB-PARITY: queue jam density (veh/km/lane) from
+                        # the evc_max_vehicles selector — used by the
+                        # discrete-queue gap 1000/density − len[car].
+                        jam_density_override = _pcpkpl,
                         pcpkpl_override      = _r74_pcpkpl,
                         mix_rate_override    = _mix_rate,
                         occ_per_veh_override = _occ_per_veh,
@@ -6481,6 +6525,38 @@ class QRAMainWindow(QMainWindow):
             _rec['n_iter'] = _n_iter_total
 
         self._auto_save_batch_evc_results(db_recs)
+
+        # ── Auto-generate TEC-style JPGs into <project>/graphs/ ─────────────
+        if not self._batch_evc_cancel_flag and _all_engines_batches and self.project_dir:
+            try:
+                try:
+                    from evc.tec_evc_style_graphs import generate_from_loaded_fdb as _gen_graph
+                except ImportError:
+                    from tec_evc_style_graphs import generate_from_loaded_fdb as _gen_graph
+                _seen_fdb_paths: set = set()
+                _graphs_written = 0
+                for _geng, _ in _all_engines_batches:
+                    _fdb_path_g = getattr(_geng, "fdb_path", None)
+                    if _fdb_path_g is None or _fdb_path_g in _seen_fdb_paths:
+                        continue
+                    _seen_fdb_paths.add(_fdb_path_g)
+                    try:
+                        _saved = _gen_graph(
+                            getattr(_geng, "fdb", None),
+                            _fdb_path_g.stem,
+                            self.project_dir,
+                        )
+                        if _saved:
+                            _graphs_written += 1
+                    except Exception as _gex:
+                        print(f"[graphs] Failed to plot {_fdb_path_g.name}: {_gex}")
+                if _graphs_written:
+                    self.evc_s4_sim_status_lbl.setText(
+                        f"📊  Saved {_graphs_written} graph(s) to graphs/  —  writing final results…")
+                    QApplication.processEvents()
+            except Exception as _gimport_err:
+                print(f"[graphs] tec_evc_style_graphs import failed: {_gimport_err}")
+
         cancelled = self._batch_evc_cancel_flag
         self.evc_sim_run_btn.setEnabled(True)
         self.evc_s4_batch_cancel_btn.setEnabled(False)
@@ -6623,6 +6699,7 @@ class QRAMainWindow(QMainWindow):
             fdb_candidates = list(Path(self.project_dir).rglob("*.fdb"))
         if fdb_candidates:
             self.evc_fdb_path_le.setText(str(fdb_candidates[0]))
+            self._autofill_mdb_pt_x()   # VB parity: refresh MDB pt. X column
             # populate MDB tab CHID + SLF last time from filename heuristic
             stem = fdb_candidates[0].stem
             self.evc_db_fds_id.setText(stem)
@@ -6655,6 +6732,7 @@ class QRAMainWindow(QMainWindow):
             "FDB Files (*.fdb *.FDB);;All Files (*.*)")
         if p:
             self.evc_fdb_path_le.setText(p)
+            self._autofill_mdb_pt_x()   # VB parity: refresh MDB pt. X column
             self.evc_db_fds_id.setText(Path(p).stem)
             self.evc_status_text.append(f"📂 FDB loaded: {Path(p).name}")
 
@@ -7166,8 +7244,7 @@ class QRAMainWindow(QMainWindow):
         """Return the exit-connection position (m) for asymmetric fire placement.
 
         Reads the first 'exit' row from evc_fireloc_table (col 1 = position).
-        Falls back to 77.5 % of tunnel length when no exit row is available,
-        which reproduces the original hardcoded asymmetric formula.
+        Falls back to full tunnel length when no exit row is available.
         """
         tl_m = 0.0
         try:
@@ -7188,15 +7265,15 @@ class QRAMainWindow(QMainWindow):
                                 return ep
                         except ValueError:
                             pass
-        return tl_m * 0.775   # fallback: original 77.5 % rule
+        return tl_m
 
     def _apply_rp_for_mode(self, is_asymmetric: bool):
         """Update the Results-tab RP(1..6) spinboxes to match the fire placement mode.
 
         Asymmetric:
             Uses tunnel_fire_positions_and_rp() with exit_position_m from the
-            fire-location table (D73 equivalent).  Falls back to the original
-            hardcoded 77.5 %/22.5 % split when tunnel geometry is not available.
+            fire-location table (D73 equivalent) to populate F73:L73 fire-point
+            mapping and M73:R73 RP(1..6) weights.
 
         Symmetric (N equal points):
             RP1–RP6 = 1/6 ≈ 0.1667  (equal weight per fire position)
@@ -7215,8 +7292,8 @@ class QRAMainWindow(QMainWindow):
                 result = tunnel_fire_positions_and_rp(tl_m, exit_pos, num_fire_points=len(self.t6_rp_inputs))
                 weights = [round(rp / 100, 4) for rp in result["rp_percent"]]
             else:
-                # fallback: original hardcoded 77.5 % split
-                weights = [round(0.775 / 5, 4)] * 5 + [round(1.0 - 5 * (0.775 / 5), 4)]
+                # geometry unavailable: keep neutral equal split
+                weights = [round(1.0 / 6, 4)] * 6
         else:
             # Symmetric mode: equal weight per fire point
             weights = [round(1.0 / 6, 4)] * 6
@@ -7245,6 +7322,97 @@ class QRAMainWindow(QMainWindow):
         else:
             # Asymmetric fire placement
             self._calc_evc_asymmetric_fire_points()
+
+    def _autofill_mdb_pt_x(self, only_row: int | None = None) -> None:
+        """Determine MDB pt. X for the Fire Point Mapping table — VB parity.
+
+        Decompile grounding (now1.txt + reference_to_DAT_004a6000.txt):
+        VB's auto-fill walks the loaded fire-database entries and assigns,
+        per fire-point row, the X-coordinate of the database whose fire
+        location brackets that point's zone:
+
+            for each FPT row j:
+                find DB entry i with  col1(j) <= X(i) <= col2(j)
+                MDB_pt_X(j) = X(i)
+
+        X(i) is the DB's own fire-source location — the FDB header's
+        "FIRE PT" field (range midpoint, e.g. "317.000- 323.000" -> 320) —
+        which is exactly what FDBData.fire_center / _parse_fdb_fire_pt read.
+        With a single shared FDB (the standard workflow) every row receives
+        the same value.  With several FDBs known (Filename List col 3 /
+        per-scenario candidates), each fire point takes the DB whose fire X
+        is nearest — the degenerate form of VB's interval match when zone
+        bounds aren't carried in this table.
+
+        The engine consumes the same anchor independently
+        (EVCEngine: fdb_offset = fdb.fire_center − fire_x;
+        x_query = current_pos + fdb_offset), so this column is the visible,
+        checkable statement of the fire-point → database mapping, matching
+        the VB UI.  Cells the user has typed over are repopulated only when
+        Fire pt. X changes or fire points are re-estimated, same as VB's
+        write-back loop.
+
+        Auto-filled cells get a light-green tint to distinguish them from
+        manual entries.
+        """
+        tbl = getattr(self, "evc_fpm_table_s4", None)
+        if tbl is None:
+            return
+
+        # ── Collect candidate fire databases and their FIRE PT values ──
+        db_pts = []   # list of (fire_pt_x_in_db, path)
+        seen = set()
+
+        def _add(path_str):
+            p = (path_str or "").strip()
+            if not p or p in seen:
+                return
+            seen.add(p)
+            try:
+                v = self._parse_fdb_fire_pt(p)
+            except Exception:
+                v = None
+            if v is not None:
+                db_pts.append((float(v), p))
+
+        _add(getattr(self, "evc_fdb_path_le", None) and
+             self.evc_fdb_path_le.text())
+        # Filename List column 3 may carry per-scenario FDB files
+        fn_tbl = getattr(self, "evc_s4_filename_table", None)
+        if fn_tbl is not None:
+            for r in range(fn_tbl.rowCount()):
+                it = fn_tbl.item(r, 3)
+                if it is not None:
+                    _add(it.text())
+
+        if not db_pts:
+            return   # nothing known — leave MDB column untouched
+
+        tint = QColor(232, 250, 236)
+        rows = range(tbl.rowCount()) if only_row is None else [only_row]
+        tbl.blockSignals(True)
+        try:
+            for ri in rows:
+                fire_itm = tbl.item(ri, 1)
+                try:
+                    fx = float(fire_itm.text()) if fire_itm and \
+                        fire_itm.text().strip() else None
+                except ValueError:
+                    fx = None
+                if len(db_pts) == 1 or fx is None:
+                    mdb_x = db_pts[0][0]
+                else:
+                    # nearest-DB selection (degenerate VB interval match)
+                    mdb_x = min(db_pts, key=lambda t: abs(t[0] - fx))[0]
+                itm = tbl.item(ri, 2)
+                if itm is None:
+                    itm = QTableWidgetItem("")
+                    itm.setTextAlignment(Qt.AlignCenter)
+                    tbl.setItem(ri, 2, itm)
+                itm.setText(f"{mdb_x:.1f}")
+                itm.setBackground(tint)
+        finally:
+            tbl.blockSignals(False)
 
     def _calc_evc_asymmetric_fire_points(self):
         """Asymmetric fire point placement (always 6 points).
@@ -7280,7 +7448,10 @@ class QRAMainWindow(QMainWindow):
 
         # ── compute positions and RP using the sheet-faithful formula ────────
         nfire    = max(2, self.evc_num_fp_s4.value())
-        exit_pos = self._get_asym_exit_position_m()
+        # For asymmetric row-73 mapping, sectioning is based on tunnel span.
+        # We still call the helper with exit_pos for compatibility, but pass
+        # tunnel length so the computed F73:L73 and M73:R73 align.
+        exit_pos = tl_m
         result   = tunnel_fire_positions_and_rp(tl_m, exit_pos, num_fire_points=nfire)
         positions = result["fire_positions_m"]
         rp_pct    = result["rp_percent"]
@@ -7316,6 +7487,9 @@ class QRAMainWindow(QMainWindow):
 
         vis = min(total, 8)
         tbl.setFixedHeight(22 * vis + tbl.horizontalHeader().height() + 4)
+
+        # VB parity: determine MDB pt. X from the loaded fire database(s)
+        self._autofill_mdb_pt_x()
 
         rp_str = ", ".join(f"{r:.2f}%" for r in rp_pct)
         msg = (
@@ -7497,6 +7671,9 @@ class QRAMainWindow(QMainWindow):
         # ── 8. Resize table height ────────────────────────────────────────────
         vis = min(total, 8)
         tbl.setFixedHeight(22 * vis + tbl.horizontalHeader().height() + 4)
+
+        # ── 8b. VB parity: MDB pt. X from the loaded fire database(s) ────────
+        self._autofill_mdb_pt_x()
 
         # ── 9. Log ────────────────────────────────────────────────────────────
         all_x = [x for _, _, x in all_fire_x]
@@ -9346,7 +9523,7 @@ class QRAMainWindow(QMainWindow):
             _sp.setFixedWidth(72)
             _sp.setToolTip(
                 f"RP({_k+1}) = zone_{_k+1}_length / tunnel_length  "
-                f"(from 터널교통량등제원!M72:R72)"
+                f"(from 터널교통량등제원!M73:R73)"
             )
             param_row.addWidget(QLabel(f"P{_k+1}:"))
             param_row.addWidget(_sp)
@@ -9465,6 +9642,23 @@ class QRAMainWindow(QMainWindow):
                      self._t6_recalculate())
         )
         _ecar_btns.addWidget(_btn_load_ss)
+
+        # ── FN-curve frequency-basis alignment ──────────────────────────────
+        # The Python↔VB F-N disparity factorises as a constant fire-occurrence
+        # ratio times a conditional-split residual.  Both live in this ECAR
+        # table, NOT in the consequence engine.  The button below uniformly
+        # rescales the table so the total annual fire frequency matches a
+        # chosen basis while preserving the event tree's own scenario split.
+        _btn_scale = QPushButton("Scale total → target…")
+        _btn_scale.setFixedHeight(22)
+        _btn_scale.setToolTip(
+            "Uniformly rescale every ECAR cell so the TOTAL annual fire "
+            "frequency equals a target value (e.g. the VB tunnel's "
+            "0.0217 fires/yr).  Removes the constant fire-occurrence gap "
+            "while preserving this event tree's own scenario split."
+        )
+        _btn_scale.clicked.connect(self._t6_scale_ecar_to_target)
+        _ecar_btns.addWidget(_btn_scale)
 
         _btn_fill = QPushButton("Fill all with Base freq")
         _btn_fill.setFixedHeight(22)
@@ -9602,10 +9796,15 @@ class QRAMainWindow(QMainWindow):
 
         # Standard Scenario UI has moved to main Tab 7 (Risk Calculations).
         # Keep this table for Tab 6 data-loading/export compatibility.
+        # Layout mirrors VB's SenarioTable (표준시나리오!O10:Z59) exactly:
+        # one row per (scenario id, smoke code) with col3 = Freq1 (ECAR, no
+        # RP), col4 = return period, col6 = RP-weighted T, cols 7-12 = the six
+        # DISTINCT per-position averaged fatalities P1..P6 (CallFatalities
+        # writes nFatal(j, nHrr, ntra, nfwc) into U:Z; T = Σ _rpᵢ·Pᵢ).
         _NFIRE_MAX = 6
-        _st4_cols = ["Scenario (CHID)", "Fan/Wind", "Frequency", "Return Yr",
-                     "Frequency×RP"] + [f"Fatal P{i+1}" for i in range(_NFIRE_MAX)] + \
-                    ["EQ Fatal (weighted)"]
+        _st4_cols = ["Scenario", "Fan/Wind", "Frequency (ECAR)", "Return Yr",
+                     "EQ Fatal (Σ RPi·Pi)"] + \
+                    [f"Fatal P{i+1}" for i in range(_NFIRE_MAX)]
         self.t6_scenario_tbl = QTableWidget(0, len(_st4_cols))
         self.t6_scenario_tbl.setHorizontalHeaderLabels(_st4_cols)
         self.t6_scenario_tbl.horizontalHeader().setStretchLastSection(True)
@@ -9737,6 +9936,26 @@ class QRAMainWindow(QMainWindow):
         self.t6_fn_ylabel_edit.setMinimumWidth(160)
         self.t6_fn_ylabel_edit.editingFinished.connect(self._t6_draw_fn_chart)
         _lbl_row.addWidget(self.t6_fn_ylabel_edit, 1)
+        # Curve construction selector — both are VB constructions:
+        #   Per-iteration  = Raw_FNC / FN_CURVE_CREATE3 (each MC iteration a
+        #                    step at ECAR×RP/MAXITER)
+        #   Per-scenario   = FNCurve2 / Fatal2FNSheet (one step per
+        #                    position×scenario at full ECAR×RP, N = average
+        #                    fatalities) — this is what the workbook's FN
+        #                    chart sheet plots.
+        _lbl_row.addWidget(QLabel("Source:"))
+        self.t6_fn_source_combo = QComboBox()
+        self.t6_fn_source_combo.addItems(
+            ["Per-iteration (Raw_FNC)", "Per-scenario (FNCurve2)"])
+        self.t6_fn_source_combo.setToolTip(
+            "Per-iteration: VB FN_CURVE_CREATE3 — every MC iteration is a "
+            "step at ECAR×RP/MAXITER.\n"
+            "Per-scenario: VB Fatal2FNSheet/FNCurve2 — one step per "
+            "position×scenario at full ECAR×RP with N = average fatalities. "
+            "Use this to match the workbook's FN chart sheet.")
+        self.t6_fn_source_combo.currentIndexChanged.connect(
+            self._t6_draw_fn_chart)
+        _lbl_row.addWidget(self.t6_fn_source_combo)
         _tb_v.addLayout(_lbl_row)
 
         # Row 1: ALARP + grid + redraw + save
@@ -10461,6 +10680,21 @@ class QRAMainWindow(QMainWindow):
         subs = []
         for vt in data:
             for ft in getattr(vt, "fire_types", []) or []:
+                # 🔧 VB-PARITY FIX (frequency double-count): alias fire types
+                # (GV "20MW" → BUS-20, ST "30MW" → GV-30) are DISPLAY mirrors
+                # of the cross-class "downgraded fire" term that the parent
+                # class node ALREADY contains — 표준시나리오 F33 = bus large
+                # fires + GV·(1−LFR.030) small fires, F43 = truck large fires
+                # + ST·(1−LFR.100) small fires. Accumulating the alias leaves
+                # on top of the parent's leaves counted the downgrade term
+                # TWICE, inflating ECAR by exactly 1.751× (020 class) and
+                # 1.079× (030 class) versus the workbook Q-column — verified
+                # against 제연무_FNCV_ROAD.xlsm named ranges, where skipping
+                # the alias leaves reproduces every Q value and the FNCurve2
+                # PLL (6.9985e-05) to 5 significant digits. The 100 class has
+                # no alias and already matched (ratio 1.000).
+                if getattr(ft, "alias_to", None) is not None:
+                    continue
                 for branch in (getattr(ft, "normal", None),
                                getattr(ft, "congest", None)):
                     if branch is None:
@@ -10553,6 +10787,104 @@ class QRAMainWindow(QMainWindow):
             pass
         return n_filled
 
+    # ── FN-curve frequency-basis alignment helpers ────────────────────────────
+    def _t6_ecar_table_to_map(self):
+        """Snapshot the ECAR table into {(hrr, traffic, wind): freq}.
+
+        Only explicitly-filled, positive cells are included (empty cells fall
+        back to base_freq at lookup time and are not part of the scenario
+        frequency basis being aligned).
+        """
+        out = {}
+        tbl = self.t6_ecar_tbl
+        for r, hrr in enumerate(self._t6_HRR_LIST):
+            for t_i, trc in enumerate(self._t6_TRC_LIST):
+                for w_i, wdc in enumerate(self._t6_WDC_LIST):
+                    c = t_i * len(self._t6_WDC_LIST) + w_i
+                    it = tbl.item(r, c)
+                    if it is None:
+                        continue
+                    txt = it.text().strip()
+                    if not txt:
+                        continue
+                    try:
+                        v = float(txt)
+                    except ValueError:
+                        continue
+                    if v > 0.0:
+                        out[(hrr, trc, wdc)] = v
+        return out
+
+    def _t6_ecar_map_to_table(self, ecar_map, tint=None) -> int:
+        """Write {(hrr, traffic, wind): freq} into the ECAR table.
+
+        Cells not present in the map are CLEARED so the table is an exact
+        image of the loaded basis (mirrors VB, where ECAR slots without a
+        SenarioTable row stay zero).  Returns the number of cells written.
+        """
+        tbl = self.t6_ecar_tbl
+        n = 0
+        tbl.blockSignals(True)
+        try:
+            for r, hrr in enumerate(self._t6_HRR_LIST):
+                for t_i, trc in enumerate(self._t6_TRC_LIST):
+                    for w_i, wdc in enumerate(self._t6_WDC_LIST):
+                        c = t_i * len(self._t6_WDC_LIST) + w_i
+                        it = tbl.item(r, c)
+                        if it is None:
+                            it = QTableWidgetItem("")
+                            it.setTextAlignment(Qt.AlignCenter)
+                            tbl.setItem(r, c, it)
+                        v = ecar_map.get((hrr, trc, wdc))
+                        if v is not None and v > 0.0:
+                            it.setText(f"{v:.6E}")
+                            if tint is not None:
+                                it.setBackground(tint)
+                            n += 1
+                        else:
+                            it.setText("")
+        finally:
+            tbl.blockSignals(False)
+        return n
+
+
+    def _t6_scale_ecar_to_target(self) -> None:
+        """Uniformly rescale the ECAR table so Σ frequencies == target.
+
+        Frequency-level alignment only: removes the constant fire-occurrence
+        gap (~16.6× in the Gopo↔VB comparison) while keeping this event
+        tree's own conditional scenario split.  The 1.1–4.2× split residual
+        remains unless the exact SenarioTable basis is loaded instead.
+        """
+        from PyQt5.QtWidgets import QInputDialog, QMessageBox
+        py_map = self._t6_ecar_table_to_map()
+        cur = sum(py_map.values())
+        if cur <= 0.0:
+            QMessageBox.warning(
+                self, "Nothing to scale",
+                "The ECAR table has no positive frequencies. Load it from "
+                "the Standard Scenario event tree first.")
+            return
+        target, ok = QInputDialog.getDouble(
+            self, "Scale total fire frequency",
+            f"Current total: {cur:.4E} fires/yr.\n"
+            "Enter the TARGET total annual fire frequency\n"
+            "(e.g. the VB tunnel's whole-tunnel value):",
+            cur, 1e-12, 1e3, 6)
+        if not ok or target <= 0.0:
+            return
+        k = target / cur
+        scaled = {key: v * k for key, v in py_map.items()}
+        n = self._t6_ecar_map_to_table(scaled, tint=QColor(255, 243, 224))
+        self._t6_recalculate()
+        try:
+            self.t6_status.setText(
+                f"ECAR rescaled ×{k:.4f}: total fire freq {cur:.4E} → "
+                f"{target:.4E}/yr ({n} cells, amber tint). Scenario split "
+                f"preserved.")
+        except Exception:
+            pass
+
     def _t6_ecar_fill_with_base(self) -> None:
         """Populate every empty ECAR cell with the current Base freq value."""
         base = float(self.t6_base_freq.value())
@@ -10617,11 +10949,26 @@ class QRAMainWindow(QMainWindow):
         return [v / total for v in vals]
 
     def _t6_populate_scenario(self, rows):
-        """Sheet 10 — SenarioTable: zone-weighted EQ Fatal per scenario."""
+        """Sheet 10 — SenarioTable, in the exact VB layout.
+
+        VB (CallFatalities + 표준시나리오) keeps ONE row per
+        (scenario id × smoke code): col 3 = Freq1 (the ECAR annual frequency,
+        no RP), col 4 = return period, col 6 = T (the RP-weighted expectation
+        as a live formula Σ _rpᵢ·Pᵢ), cols 7–12 = the six DISTINCT
+        per-position trimmed-average fatalities nFatal(j, …) = P1..P6.
+
+        The previous Python layout emitted one row per position with the
+        position's eq duplicated across all six P columns and "Frequency×RP"
+        equal to "Frequency", which made column-for-column workbook diffs
+        against the VB reference impossible.  This version groups the
+        per-position records into the VB shape.  RP appears on exactly one
+        side: NOT in this sheet's Frequency column (matching VB col 3); it is
+        applied inside the Σ RPᵢ·Pᵢ expectation and, separately, in the FN /
+        Raw_Senario machinery as ECAR×RP/MAXITER.
+        """
         tbl = self.t6_scenario_tbl
         tbl.setRowCount(0)
         rp = self._t6_get_rp_weights()
-        base_freq = self.t6_base_freq.value()
 
         def _ci(txt, bold=False, bg=None):
             it = QTableWidgetItem(str(txt))
@@ -10632,79 +10979,120 @@ class QRAMainWindow(QMainWindow):
                 it.setBackground(bg)
             return it
 
+        # Group per-position records into scenarios.  `rows` is ordered
+        # saved_at DESC, so the FIRST record seen for a (scenario, position)
+        # is the latest session — keep it and skip older duplicates, mirroring
+        # VB where EVC_Result_BF holds exactly one AVG row per deck.
+        scen = {}          # (hrr, traffic, wind) -> {pos: avg_eq_fatal}
+        order = []
         for rec in rows:
             pos, hrr, traffic, wind = self._t6_parse_evc_name(rec["evc_name"])
-            eq_fatal = rec["avg_eq_fatal"]
-            # VB SenarioTable col 3: ECAR(nHrr, nTRC, nWDC) annual frequency,
-            # one value per (HRR × Traffic × Wind) cell.  Falls back to
-            # base_freq for unrecognised codes or empty cells.
+            key = (hrr, traffic, wind)
+            if key not in scen:
+                scen[key] = {}
+                order.append(key)
+            if 1 <= pos <= 6 and pos not in scen[key]:
+                scen[key][pos] = float(rec.get("avg_eq_fatal") or 0.0)
+
+        for key in order:
+            hrr, traffic, wind = key
+            pvals = [scen[key].get(i + 1, 0.0) for i in range(6)]
             ecar = self._t6_get_ecar(hrr, traffic, wind)
-            # `freq` here is the per-position scenario frequency:
-            #     freq = ECAR × RP(pos)
-            # which is what VB calls "Frequency" in the SenarioTable summary.
-            freq = ecar * rp[pos - 1] if 1 <= pos <= 6 else ecar
+            # T column — VB CallFatalities writes
+            #   "=_rp1*rc[1]+_rp2*rc[2]+...+_rp6*rc[6]"
+            weighted = sum(r * p for r, p in zip(rp, pvals))
+
+            t_letter = "N" if str(traffic).upper().startswith("N") else "C"
+            sid = f"{hrr}{t_letter}"
+            smk = f"{t_letter}{wind}"
 
             ri = tbl.rowCount(); tbl.insertRow(ri)
-            tbl.setItem(ri, 0, _ci(rec["evc_name"]))
-            tbl.setItem(ri, 1, _ci(f"{traffic} / {wind}"))
-            tbl.setItem(ri, 2, _ci(f"{freq:.4E}"))
-            tbl.setItem(ri, 3,
-                _ci(f"{1/freq:.1f}" if freq > 0 else "∞"))
-            # Column 5 ("Frequency×RP") is the per-position scenario frequency
-            # — i.e. the same value as column 3.  The earlier implementation
-            # multiplied by RP a second time, producing ECAR × RP², which
-            # under-counted the per-position contribution by RP (~0.17×) and
-            # made this column meaningless.  Keep it equal to `freq` so the
-            # column behaves like VB's "Frequency × RP" cell — RP has already
-            # been applied once.
-            tbl.setItem(ri, 4, _ci(f"{freq:.4E}"))
-
-            # Fatal per zone — same value repeated across all positions
-            # (in the real VB this comes from nFatal(pos, hrr, traffic, wind))
+            tbl.setItem(ri, 0, _ci(sid))
+            tbl.setItem(ri, 1, _ci(smk))
+            tbl.setItem(ri, 2, _ci(f"{ecar:.4E}"))
+            tbl.setItem(ri, 3, _ci(f"{1/ecar:.1f}" if ecar > 0 else "∞"))
+            tbl.setItem(ri, 4, _ci(f"{weighted:.4f}", bold=True,
+                                   bg=QColor(255, 255, 220)))
             for _pi in range(6):
-                tbl.setItem(ri, 5 + _pi, _ci(f"{eq_fatal:.3f}"))
-
-            # Zone-weighted EQ Fatal = Σ RP(i) × Fatal(i) — VB CallFatalities formula
-            weighted_eq = eq_fatal  # already zone-weighted by EVCEngine
-            tbl.setItem(ri, 11, _ci(f"{weighted_eq:.4f}", bold=True,
-                                     bg=QColor(255, 255, 220)))
+                tbl.setItem(ri, 5 + _pi, _ci(f"{pvals[_pi]:.3f}"))
 
         tbl.resizeColumnsToContents()
 
     def _t6_build_maxiter_index(self, rows):
-        """Build a per-scenario accumulated MAXITER lookup.
+        """Build a per-scenario MAXITER lookup — VB-EXACT semantics.
 
-        Mirrors VB CalnFillFreq's per-block MAXITER walk.  In VB, MAXITER is the
-        largest iteration number found in the contiguous WDC block in column 5
-        of Raw_senario — i.e. the total number of MC samples that scenario has
-        accumulated across all runs.
+        VB CalnFillFreq detects MAXITER by walking the contiguous scenario
+        block in Raw_senario column 5 (the iteration counter) and taking the
+        LARGEST iteration number found:
 
-        In this Python port, every batch session inserts a *new* DB row per
-        EVC file rather than appending to an existing one, so the accumulated
-        count for a given scenario is the sum of `n_run` across every DB row
-        that shares the same `evc_name`.  We also fall back to `len(runs_json)`
-        when `n_run` is missing or stored as 0.
+            If MAXITER < nIter Then MAXITER = nIter
+
+        It does NOT count rows.  Consequence, reproduced here deliberately:
+        when a workbook (or this app's results DB) accumulates duplicate
+        sessions — e.g. two batches of iterations 1..5 for the same scenario —
+        MAXITER stays 5 while the rows double, so every row keeps frequency
+        ECAR×RP/5 and the scenario's summed frequency mass DOUBLE-COUNTS
+        (Σ row-freq = 2×ECAR).  This matches the VB program bit for bit,
+        including on contaminated data.
+
+        Mapping to this app's storage: each session is one DB row whose
+        runs_json holds runs numbered run_no = 1..n_run (numbering restarts
+        every session, exactly like pasting another 1..5 block under the
+        previous one in Raw_senario).  The VB column-max therefore equals
+        the maximum run_no observed across ALL DB rows sharing the same
+        evc_name (falling back to n_iter / n_run / parsed length when
+        run_no is absent).
+
+        The previous behaviour — summing parsed iterations across sessions
+        so that Σ row-freq = ECAR is conserved — remains available by
+        setting  self.fn_maxiter_mode = 'conserve'  (default 'vb_max').
+        Use 'conserve' only when you explicitly want stale duplicate
+        sessions to NOT inflate the FN curve; 'vb_max' is what the VB
+        workbook produces on the same data.
 
         Returns
         -------
         dict[str, int]
-            Mapping from `evc_name` → accumulated MAXITER (>= 1).
+            Mapping from `evc_name` → MAXITER (>= 1).
         """
         import json
+        mode = getattr(self, 'fn_maxiter_mode', 'vb_max')
         acc = {}
+        self._t6_maxiter_declared = {}   # evc_name → Σ n_run (diagnostic)
         for rec in rows:
             name = rec.get("evc_name") or ""
             if not name:
                 continue
-            # Prefer n_run (the spinner value for that session); fall back to
-            # the actual length of runs_json when n_run is absent or zero.
-            n = rec.get("n_run")
-            if not n:
+            try:
+                runs = json.loads(rec.get("runs_json") or "[]")
+            except Exception:
+                runs = []
+            n_parsed = len(runs)
+            # largest iteration number in this session's block (VB col-5 walk)
+            blk_max = 0
+            for _r in runs:
                 try:
-                    n = len(json.loads(rec.get("runs_json") or "[]"))
-                except Exception:
-                    n = 0
-            acc[name] = acc.get(name, 0) + int(n or 0)
+                    blk_max = max(blk_max, int(_r.get("run_no") or 0))
+                except (TypeError, ValueError, AttributeError):
+                    pass
+            for _k in ("n_iter", "n_run"):
+                try:
+                    blk_max = max(blk_max, int(rec.get(_k) or 0))
+                except (TypeError, ValueError):
+                    pass
+            blk_max = max(blk_max, n_parsed)
+
+            if mode == 'conserve':
+                acc[name] = acc.get(name, 0) + int(n_parsed)
+            else:  # 'vb_max' — VB CalnFillFreq: max across the whole block
+                acc[name] = max(acc.get(name, 0), int(blk_max))
+
+            try:
+                n_decl = int(rec.get("n_run") or 0)
+            except (TypeError, ValueError):
+                n_decl = 0
+            self._t6_maxiter_declared[name] = (
+                self._t6_maxiter_declared.get(name, 0) + max(n_decl, n_parsed))
         # Guarantee at least 1 to avoid divide-by-zero downstream
         return {k: max(v, 1) for k, v in acc.items()}
 
@@ -10716,10 +11104,9 @@ class QRAMainWindow(QMainWindow):
         rp = self._t6_get_rp_weights()
         base_freq = self.t6_base_freq.value()
         total_risk = 0.0
-        # VB-faithful MAXITER: total iterations accumulated for this scenario
-        # across every DB row that shares the same evc_name.  Replaces the
-        # broken per-row n_iter (which was always equal to n_run for one
-        # session, so dividing by it double-counted across sessions).
+        # VB-EXACT MAXITER: the block's maximum iteration number per
+        # evc_name (VB CalnFillFreq column-5 walk) — see
+        # _t6_build_maxiter_index for semantics and the 'conserve' mode.
         maxiter_by_name = self._t6_build_maxiter_index(rows)
 
         class _SortableItem(QTableWidgetItem):
@@ -10758,11 +11145,13 @@ class QRAMainWindow(QMainWindow):
             except Exception:
                 runs_raw = []
 
-            # VB CalnFillFreq: MAXITER is the total iteration count for this
-            # scenario block, accumulated across ALL DB rows with the same
-            # evc_name — not just this session's count.  Without this, running
-            # the same scenario across N sessions inflates the per-row
-            # frequency by a factor of N.
+            # VB CalnFillFreq (VB-EXACT): MAXITER is the LARGEST iteration
+            # number in the scenario block (column-5 max), looked up across
+            # all DB rows sharing this evc_name.  Duplicate sessions keep
+            # MAXITER at the per-session count while rows multiply, so the
+            # frequency mass double-counts exactly as the VB workbook does.
+            # Set self.fn_maxiter_mode = 'conserve' for the conserving
+            # alternative (sum of parsed iterations).
             n_runs = max(maxiter_by_name.get(rec.get("evc_name") or "", 0),
                          len(runs_raw), 1)
 
@@ -10960,6 +11349,43 @@ class QRAMainWindow(QMainWindow):
         self._t6_fn_pts = unique_fn_pts   # store for chart
         self._t6_step_rows_sorted = step_rows  # store for data table (left panel)
 
+        # ── Frequency-conservation diagnostic ─────────────────────────────
+        # Report (a) the per-iteration curve top F(N≥0.1), (b) the
+        # scenario-level total Σ ECAR×RP over fatal scenarios (what the VB
+        # FNCurve2/Fatal2FNSheet construction charts), and (c) the session
+        # coverage — how badly the OLD declared-n_run denominator would have
+        # deflated the curve.  If the Python↔VB FN curves show a constant
+        # vertical offset, these three numbers identify the mechanism
+        # immediately.
+        try:
+            top_iter = unique_fn_pts[-1][1] if unique_fn_pts else 0.0
+            seen_scen = set()
+            top_scen = 0.0
+            for rec in rows:
+                pos, hrr, traffic, wind = self._t6_parse_evc_name(rec["evc_name"])
+                if (rec.get("avg_eq_fatal") or 0.0) < 0.1:
+                    continue
+                key = rec["evc_name"]
+                if key in seen_scen:
+                    continue
+                seen_scen.add(key)
+                ecar = self._t6_get_ecar(hrr, traffic, wind)
+                rp_w = rp[pos - 1] if 1 <= pos <= 6 else 1.0
+                if ecar * rp_w > 0:
+                    top_scen += ecar * rp_w
+            decl = sum((getattr(self, "_t6_maxiter_declared", {}) or {}).values())
+            parsed = sum(maxiter_by_name.values())
+            cov = (decl / parsed) if parsed > 0 else 1.0
+            msg = (f"FN diag — per-iteration top F(N≥0.1): {top_iter:.4E}/yr;  "
+                   f"per-scenario (FNCurve2) top: {top_scen:.4E}/yr;  "
+                   f"session coverage: declared {decl} vs parsed {parsed} "
+                   f"iterations (old denominator deflated curve ×{cov:.1f}).")
+            self._t6_fn_diag = msg
+            if cov > 1.05:
+                self.t6_status.setText("⚠  " + msg)
+        except Exception:
+            self._t6_fn_diag = ""
+
         def _ci(txt, bg=None):
             it = QTableWidgetItem(str(txt))
             it.setTextAlignment(Qt.AlignCenter)
@@ -11128,6 +11554,25 @@ class QRAMainWindow(QMainWindow):
             r["cumul_freq"] = cumul
             total_risk += r["risk_index"]
 
+        # Store the per-scenario FN points (N = scenario-average fatalities,
+        # F = running Σ ECAR×RP) so the FN Curve tab can draw the VB
+        # FNCurve2/Fatal2FNSheet construction when "Per-scenario" is selected
+        # as the curve source.  Collapse duplicate N values like the
+        # per-iteration path does.
+        try:
+            from collections import defaultdict as _dd
+            _nmap = _dd(float)
+            for r in scen_rows:
+                _nmap[r["fatalities"]] += r["freq_yr"]
+            _pts = []
+            _c = 0.0
+            for _n in sorted(_nmap.keys(), reverse=True):
+                _c += _nmap[_n]
+                _pts.append((_n, _c))
+            self._t6_fn_pts_scen = _pts
+        except Exception:
+            self._t6_fn_pts_scen = []
+
         def _ci(txt, right=False, bg=None):
             it = QTableWidgetItem(str(txt))
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter if right
@@ -11194,7 +11639,28 @@ class QRAMainWindow(QMainWindow):
                 _tbl.setItem(_ri, 3, _ci(f"{float(_sr.get('freq',0)):.4E}"))
                 _tbl.setItem(_ri, 4, _ci(f"{float(_sr.get('cumul_freq',0)):.4E}"))
 
-        if not hasattr(self, '_t6_fn_pts') or not self._t6_fn_pts:
+        # ── Select curve source (Per-iteration Raw_FNC vs Per-scenario
+        #    FNCurve2/Fatal2FNSheet) ─────────────────────────────────────────
+        _src_scen = False
+        try:
+            _src_scen = (getattr(self, "t6_fn_source_combo", None) is not None
+                         and self.t6_fn_source_combo.currentIndex() == 1)
+        except Exception:
+            _src_scen = False
+        if _src_scen:
+            # FNCurve2 points may not have been built yet for this load.
+            if not getattr(self, "_t6_fn_pts_scen", None):
+                rows_for_scen = getattr(self, "_t6_raw_rows", None)
+                if rows_for_scen:
+                    try:
+                        self._t6_populate_fncurve2(rows_for_scen)
+                    except Exception:
+                        pass
+            _fn_pts_active = list(getattr(self, "_t6_fn_pts_scen", []) or [])
+        else:
+            _fn_pts_active = list(getattr(self, "_t6_fn_pts", []) or [])
+
+        if not _fn_pts_active:
             # No data yet — show hint
             self.t6_fn_ax.cla()
             self.t6_fn_ax.set_xlabel(
@@ -11212,7 +11678,7 @@ class QRAMainWindow(QMainWindow):
             return
 
         # ── Build staircase ───────────────────────────────────────────────
-        plot_pts = sorted(self._t6_fn_pts, key=lambda p: p[0])
+        plot_pts = sorted(_fn_pts_active, key=lambda p: p[0])
         xs, ys = [], []
         if plot_pts:
             for i, (n_curr, f_curr) in enumerate(plot_pts):
@@ -11279,9 +11745,9 @@ class QRAMainWindow(QMainWindow):
             ax.plot(xs, ys, '-', color='#2c3e50', linewidth=2.0, label='F-N curve')
 
         # ── Scenario knots ────────────────────────────────────────────────
-        if self._t6_fn_pts and getattr(self, 't6_show_knots_cb', None) and self.t6_show_knots_cb.isChecked():
-            _kx = [p[0] for p in self._t6_fn_pts]
-            _ky = [p[1] for p in self._t6_fn_pts]
+        if _fn_pts_active and getattr(self, 't6_show_knots_cb', None) and self.t6_show_knots_cb.isChecked():
+            _kx = [p[0] for p in _fn_pts_active]
+            _ky = [p[1] for p in _fn_pts_active]
             ax.plot(_kx, _ky, 'o', color='#c0392b', markersize=5, label='Scenario knots')
 
         ax.set_xscale('log'); ax.set_yscale('log')
@@ -11668,7 +12134,9 @@ class QRAMainWindow(QMainWindow):
         try:
             _VOL_N_COLS = 7   # Car … Special  (columns E through K)
             _ROW_PLUS_DIR  = 0
+            _ROW_MINUS_DIR = 1
             _ROW_OCCUPANTS = 6
+            _EVAC_OCCUPANTS_COL = 3
 
             def _read_veh_row(row_idx: int):
                 """Return list of 7 text values from tbi_veh_table for row_idx."""
@@ -11678,23 +12146,72 @@ class QRAMainWindow(QMainWindow):
                     vals.append(it.text().strip() if it else "0")
                 return vals
 
+            def _sync_occupants_to_dependents(*_args):
+                occupants = _read_veh_row(_ROW_OCCUPANTS)
+
+                # Keep the evac-parameter occupants column aligned with the
+                # Traffic Volume & Vehicle Specs occupants row so both views
+                # use the same per-vehicle occupant basis.
+                evac_tbl = getattr(self, "evac_veh_table", None)
+                if evac_tbl is not None:
+                    evac_tbl.blockSignals(True)
+                    try:
+                        for ri, val in enumerate(occupants[:evac_tbl.rowCount()]):
+                            itm = evac_tbl.item(ri, _EVAC_OCCUPANTS_COL)
+                            if itm is None:
+                                itm = QTableWidgetItem(str(val))
+                                itm.setTextAlignment(Qt.AlignCenter)
+                                evac_tbl.setItem(ri, _EVAC_OCCUPANTS_COL, itm)
+                            else:
+                                itm.setText(str(val))
+                    finally:
+                        evac_tbl.blockSignals(False)
+
+                if hasattr(self, "_calc_speed_table"):
+                    self._calc_speed_table()
+                if hasattr(self, "_calc_lane_distribution"):
+                    self._calc_lane_distribution()
+
             def _push_traffic_volume_to_tunnel(*_args):
                 ttw = getattr(self, "tunnel_traffic_widget", None)
                 if ttw is None or not hasattr(ttw, "set_traffic_volume_cells"):
                     return
                 try:
                     plus_dir  = _read_veh_row(_ROW_PLUS_DIR)
+                    minus_dir = _read_veh_row(_ROW_MINUS_DIR)
                     occupants = _read_veh_row(_ROW_OCCUPANTS)
-                    ttw.set_traffic_volume_cells(plus_dir, occupants)
+
+                    def _to_float(v):
+                        try:
+                            return float(str(v).strip())
+                        except (TypeError, ValueError):
+                            return 0.0
+
+                    is_twoway = bool(
+                        hasattr(self, "tbi_radio_twoway")
+                        and self.tbi_radio_twoway.isChecked()
+                    )
+                    traffic_volume = [
+                        (_to_float(p) + _to_float(m)) if is_twoway else _to_float(p)
+                        for p, m in zip(plus_dir, minus_dir)
+                    ]
+
+                    ttw.set_traffic_volume_cells(traffic_volume, occupants)
                 except Exception:
                     pass
 
             self.tbi_veh_table.cellChanged.connect(
                 lambda r, _c: _push_traffic_volume_to_tunnel()
-                if r in (_ROW_PLUS_DIR, _ROW_OCCUPANTS) else None
+                if r in (_ROW_PLUS_DIR, _ROW_MINUS_DIR, _ROW_OCCUPANTS) else None
             )
+            self.tbi_veh_table.cellChanged.connect(
+                lambda r, _c: _sync_occupants_to_dependents()
+                if r == _ROW_OCCUPANTS else None
+            )
+            self.tbi_traffic_btn_group.idClicked.connect(_push_traffic_volume_to_tunnel)
             # Initial push on startup.
             _push_traffic_volume_to_tunnel()
+            _sync_occupants_to_dependents()
         except Exception:
             pass
         
@@ -11805,6 +12322,7 @@ class QRAMainWindow(QMainWindow):
                 ("📂 ascii_files/", []),
                 ("📂 evc_files/", []),
                 ("📂 fed_results/", []),
+                ("📂 graphs/", []),
                 ("📂 logs/", []),
                 (f"📄 {db_name}", None),
                 ("📄 run_all_simulations.bat", None)
@@ -11841,6 +12359,7 @@ class QRAMainWindow(QMainWindow):
                 "ascii_files",
                 "evc_files",
                 "fed_results",
+                "graphs",
                 "logs"
             ]
             
@@ -11938,7 +12457,7 @@ class QRAMainWindow(QMainWindow):
 
             # Ensure all expected subdirectories exist (handles legacy projects)
             _ensure = ["ascii_files", "evc_files", "fed_results", "fdb_files",
-                       "fds_inputs", "logs"]
+                       "fds_inputs", "graphs", "logs"]
             for _d in _ensure:
                 _p = Path(self.project_dir) / _d
                 if not _p.exists():
@@ -13871,15 +14390,31 @@ class QRAMainWindow(QMainWindow):
             except Exception:
                 return int(default)
 
+        def _occ_pos(item):
+            """True when a tbi Occupants cell holds a value > 0."""
+            try:
+                return item is not None and float(item.text()) > 0
+            except (TypeError, ValueError):
+                return False
+
         tunnel = {
             "name":        getattr(self, 'tbi_tunnel_name', None) and self.tbi_tunnel_name.text().strip() or "Sample Tunnel",
             # EVC tunnel length: use evc_tunnel_length spinbox (the
             # EVC-specific widget) rather than tbi_length which gets
             # overwritten with the full FDB/FDS domain length (e.g. 640 m).
             # The user sets evc_tunnel_length to the one-way tunnel length.
-            "length":      (self.evc_tunnel_length.value()
-                            if hasattr(self,"evc_tunnel_length")
-                            else _tbi("tbi_length", 410.0)),
+            # 🔧 VB-PARITY (length precedence): the Tunnel Info Length field
+            # (tbi_length — what the user actually fills in, e.g. 356) is the
+            # authoritative source for EVC L3, exactly like occupancy. The
+            # hidden evc_tunnel_length spinbox (default 410) previously took
+            # precedence, silently writing 410 m into every EVC and inflating
+            # the congested queue population by ~1.15× (observed 368.5
+            # evacuees vs VB 331 at 356 m). The spinbox is now only a
+            # fallback when Tunnel Info Length is empty/zero.
+            "length":      (_tbi("tbi_length", 0.0)
+                            if _tbi("tbi_length", 0.0) > 0
+                            else (self.evc_tunnel_length.value()
+                                  if hasattr(self,"evc_tunnel_length") else 410.0)),
             "gradient":    _tbi("tbi_gradient",    -3.0),
             "cross_area":  _tbi("tbi_area",        54.11),
             "height":      _tbi("tbi_height",       5.9),
@@ -13895,9 +14430,26 @@ class QRAMainWindow(QMainWindow):
             "veh_plus_dir":  [self.tbi_veh_table.item(0, c).text() if self.tbi_veh_table.item(0, c) else "0" for c in range(self.tbi_veh_table.columnCount())],
             "veh_minus_dir": [self.tbi_veh_table.item(1, c).text() if self.tbi_veh_table.item(1, c) else "0" for c in range(self.tbi_veh_table.columnCount())],
             "mix_rate":      [self.tbi_veh_table.item(2, c).text() if self.tbi_veh_table.item(2, c) else "0" for c in range(self.tbi_veh_table.columnCount())],
+            # 🔧 TWO-WAY: -Dir mix rate (tbi_veh_table row 3) — written to EVC
+            # L31–L37 when Two-way is selected. Empty → writer mirrors +Mix.
+            "mix_rate_minus": [self.tbi_veh_table.item(3, c).text() if self.tbi_veh_table.item(3, c) else "0" for c in range(self.tbi_veh_table.columnCount())],
             "pcu":           [self.tbi_veh_table.item(4, c).text() if self.tbi_veh_table.item(4, c) else "1" for c in range(self.tbi_veh_table.columnCount())],
             "veh_length":    [self.tbi_veh_table.item(5, c).text() if self.tbi_veh_table.item(5, c) else "0" for c in range(self.tbi_veh_table.columnCount())],
             "occupants":     [self.tbi_veh_table.item(6, c).text() if self.tbi_veh_table.item(6, c) else "0" for c in range(self.tbi_veh_table.columnCount())],
+            # 🔧 VB-PARITY: occupancy for the SIMULATION (EVC L52–L58).
+            # Primary source = the Tunnel Info "Occupants" row above
+            # (승차인원, same row as "occupants"), matching VB's single
+            # occupant table. The evac_veh_table col-3 values are used only
+            # when the Tunnel Info row is empty.
+            "sim_occupants": (
+                [self.tbi_veh_table.item(6, c).text() if self.tbi_veh_table.item(6, c) else ""
+                 for c in range(self.tbi_veh_table.columnCount())]
+                if any(_occ_pos(self.tbi_veh_table.item(6, c))
+                       for c in range(self.tbi_veh_table.columnCount()))
+                else ([(self.evac_veh_table.item(r, 3).text()
+                        if self.evac_veh_table.item(r, 3) else "")
+                       for r in range(self.evac_veh_table.rowCount())]
+                      if hasattr(self, 'evac_veh_table') else [])),
             # keep hidden spinbox values as fallbacks
             "width":       self.evc_tunnel_width.value(),
             "sim_duration":self.evc_sim_duration.value(),
@@ -14332,7 +14884,13 @@ class QRAMainWindow(QMainWindow):
                     _evac_occ.append(float(_io.text()) if _io and _io.text().strip() else occ_vals[_r])
                 except Exception:
                     _evac_occ.append(occ_vals[_r] if _r < len(occ_vals) else 1.5)
-            if len(_evac_occ) == VT:
+            # 🔧 VB-PARITY: only fall back to the evac-table values when the
+            # Tunnel Info "Occupants" row (occ_vals, 승차인원) is empty. The
+            # previous unconditional override meant L52–L58 carried the evac
+            # table's averages even when the user had entered the project
+            # occupancy in Tunnel Info — VB has a single occupants table and
+            # the Tunnel Info row is its counterpart.
+            if len(_evac_occ) == VT and not any(v > 0 for v in occ_vals):
                 occ_vals = _evac_occ
         except Exception:
             pass
@@ -14706,8 +15264,28 @@ class QRAMainWindow(QMainWindow):
         # L01: Tunnel name
         lines.append(tunnel_name)
 
-        # L02: NPC flag / traffic direction (-1=both directions, 0=one-way)
-        lines.append("-1             0 ")
+        # ── Traffic direction (one-way vs two-way) ────────────────────────
+        # 🔧 TWO-WAY FIX: the EVC direction mode is encoded by the L02 boolean
+        # pair (VB: -1 = True, 0 = False) for the (One-way, Two-way) option
+        # buttons, and by whether the SECOND-direction blocks L17–L23 (counts)
+        # and L31–L37 (mix) are populated. This writer previously hardcoded
+        # L02 = "-1  0" and those blocks to zero, so selecting the Two-way
+        # radio had no effect on the file. Now driven by tunnel["traffic_dir"]
+        # and the -Dir rows (veh_minus_dir / mix_rate_minus) collected from
+        # tbi_veh_table rows 1 and 3.
+        _two_way = str(tn.get("traffic_dir", "one-way")).lower().startswith("two")
+        veh_counts_minus = [_tvt("veh_minus_dir", c) for c in range(VT)]
+        mix_rates_minus  = [_tvt("mix_rate_minus", c) for c in range(VT)]
+        # Symmetric fallback: if two-way but the -Mix row is empty, mirror +Mix
+        # (the GUI auto-fills -Mix to match +Mix for symmetric two-way tunnels).
+        if _two_way and not any(v > 0 for v in mix_rates_minus):
+            mix_rates_minus = list(mix_rates)
+        if _two_way and not any(v > 0 for v in veh_counts_minus):
+            veh_counts_minus = list(veh_counts)
+
+        # L02: direction flags (VB boolean pair).  one-way = "-1  0",
+        # two-way (대면통행) = "0  -1".
+        lines.append(" 0            -1 " if _two_way else "-1             0 ")
 
         # L03: Tunnel length (m)
         lines.append(f" {_g(L)} ")
@@ -14731,27 +15309,31 @@ class QRAMainWindow(QMainWindow):
         # VB reference: 0.5  0.5  (both absolute speeds equal in reference file)
         lines.append(_col14([abs_min_speed, abs_elderly_speed]))
 
-        # L10-L16: Vehicle counts per type from tbi_veh_table row 0 (+Dir).
-        # These are the AADT counts by vehicle type, constant across HRR and
-        # ventilation scenarios.  Matches VB reference format where L10-L16
-        # contain: 승용차, 소형버스, 대형버스, 소형트럭, 중형트럭, 대형트럭, 특수트럭.
+        # L10-L16: +Dir vehicle volumes per type (tbi_veh_table row 0).
+        # VB keeps these fractional (e.g. 4.5, 16.5), so format with _g — not
+        # int() — to match the reference files byte-for-byte.
         for v in veh_counts:
-            lines.append(f" {int(v)} ")
+            lines.append(f" {_g(v)} ")
 
-        # L17-L23: Seven zero padding lines
-        for _ in range(7):
-            lines.append(" 0 ")
+        # L17-L23: -Dir vehicle volumes (two-way only; one-way = zeros).
+        if _two_way:
+            for v in veh_counts_minus:
+                lines.append(f" {_g(v)} ")
+        else:
+            for _ in range(7):
+                lines.append(" 0 ")
 
-        # L24-L30: Vehicle mix percentages from tbi_veh_table row 2 (+Mix Rate).
-        # These are constant across HRR and ventilation scenarios.
-        # Formula: count_i / total_AADT × 100  (sum = 100%).
-        # Matches VB reference format (e.g. 86.3507, 0.334472, 6.258895, ...).
+        # L24-L30: +Dir vehicle mix percentages (tbi_veh_table row 2).
         for m in mix_rates:
             lines.append(f" {_g(m)} ")
 
-        # L31-L37: Seven zero padding lines
-        for _ in range(7):
-            lines.append(" 0 ")
+        # L31-L37: -Dir mix percentages (two-way only; one-way = zeros).
+        if _two_way:
+            for m in mix_rates_minus:
+                lines.append(f" {_g(m)} ")
+        else:
+            for _ in range(7):
+                lines.append(" 0 ")
 
         # L38-L44: PCU factors for all 7 vehicle types (from PCU row in tbi_veh_table)
         # VB writes all 7 PCU values first, then all 7 vehicle lengths
@@ -14762,14 +15344,16 @@ class QRAMainWindow(QMainWindow):
         for v in veh_lengths:
             lines.append(f" {_g(v)} ")
 
-        # L52-L59: Fixed speed parameters and flags (constants from VB reference)
-        lines.append(" 3 ")    # L52
-        lines.append(" 8 ")    # L53
-        lines.append(" 30 ")   # L54
-        lines.append(" 2 ")    # L55
-        lines.append(" 2 ")    # L56
-        lines.append(" 1 ")    # L57
-        lines.append(" 1 ")    # L58
+        # L52-L58: occupants per vehicle type. 🔧 VB-PARITY FIX —
+        # VB's FUN_0045d560 loops `For p = 1 To L52..58[type]` per queued
+        # vehicle, so these values directly set the simulated evacuee
+        # count. Write the project's occupancy table (occ_vals: the
+        # evac_veh_table col-3 average-occupancy override computed above,
+        # capacity fallback) instead of the GUMOK reference constants
+        # [3, 8, 30, 2, 2, 1, 1], which over-counted evacuees ~2× and
+        # dragged out EV Time for projects with average occupancy ~1.5/car.
+        for _ov in occ_vals:
+            lines.append(f" {_g(_ov)} ")
         lines.append(" 1 ")    # L59
 
         # L60: Fire_Point line
@@ -14792,8 +15376,23 @@ class QRAMainWindow(QMainWindow):
         # L64: EVC fire point X (m)
         lines.append(f" {_g(fp)} ")
 
-        # L65: Pre-movement time (s)
-        lines.append(f" {pre_move_time} ")
+        # L65: Max Congestion Vehicles — jam density K (veh/km/lane).
+        # 🔧 FIX: the VB reader stores L65 in DAT_004a6220, which the decompile
+        # (DAT1.txt / FUN.txt) defaults to 150 and multiplies by the design
+        # hourly traffic (DAT_004a6514 = L66) — i.e. L65 is the MAX-CONGESTION /
+        # jam-density value, NOT a pre-movement time. This writer was emitting
+        # the premovement constant (165) here, so the "Max Congestion Vehicles"
+        # field on Tab-2 had no effect on the file. Source it from the same
+        # evc_max_vehicles widget that already drives the simulation's
+        # jam_density_override; fall back to the VB default 150.
+        _max_cong_veh = 150.0
+        try:
+            _mcv_txt = self.evc_max_vehicles.currentText().strip()
+            if _mcv_txt:
+                _max_cong_veh = float(_mcv_txt)
+        except Exception:
+            _max_cong_veh = _f(tn, "jam_density", 150.0) or 150.0
+        lines.append(f" {_g(_max_cong_veh)} ")
 
         # L66: Normal hourly traffic (veh/h)
         lines.append(f" {_g(normal_traffic)} ")

@@ -93,9 +93,13 @@ def _col14(values: Sequence) -> str:
 _BYTES_L02 = b"-1             0 "
 _BYTES_L17_TO_L23 = b"\n".join([b" 0 "] * 7)            # L17–L23, joined w/ \n
 _BYTES_L31_TO_L37 = b"\n".join([b" 0 "] * 7)            # L31–L37
-_BYTES_L52_TO_L59 = b"\n".join([
-    b" 3 ", b" 8 ", b" 30 ", b" 2 ", b" 2 ", b" 1 ", b" 1 ", b" 1 ",
-])
+# 🔧 VB-PARITY: L52–L58 are no longer emitted from this static block.
+# VB's FUN_0045d560 loops `For p = 1 To L52..58[type]` per queued vehicle,
+# so these values directly set the simulated evacuee count. They are now
+# written per-project in build_tunnel_context() from the average-occupancy
+# table (tunnel["sim_occupants"], i.e. evac_veh_table col 3). The capacity
+# constants below remain only as the last-resort fallback.
+_L52_CAPACITY_FALLBACK = (3.0, 8.0, 30.0, 2.0, 2.0, 1.0, 1.0)
 _BYTES_L61 = b" 2 "
 _BYTES_L67 = b"False,True"
 _BYTES_L79 = b"True,False"
@@ -232,6 +236,24 @@ def build_tunnel_context(params: dict) -> TunnelContext:
     veh_lengths = [_tvt("veh_length",   c) for c in range(VT)]
     occ_vals    = [_tvt("occupants",    c) for c in range(VT)]
 
+    # 🔧 VB-PARITY (simulation occupancy → EVC L52–L58):
+    # Priority: tunnel["sim_occupants"] (evac_veh_table col 3 average
+    # occupancy, e.g. ~1.5/car) → mix-table "occupants" (capacity) →
+    # legacy capacity constants. The L74 budget formula below still uses
+    # occ_vals (capacity), matching VB's worst-case time budget.
+    _sim_occ_raw = tn.get("sim_occupants") or []
+    sim_occ = []
+    for _c in range(VT):
+        _v = None
+        try:
+            if _c < len(_sim_occ_raw) and str(_sim_occ_raw[_c]).strip() not in ("", "—", "-"):
+                _v = float(_sim_occ_raw[_c])
+        except (TypeError, ValueError):
+            _v = None
+        if _v is None or _v <= 0:
+            _v = occ_vals[_c] if occ_vals[_c] > 0 else _L52_CAPACITY_FALLBACK[_c]
+        sim_occ.append(_v)
+
     abs_min_speed     = _f(sm, "abs_min_speed",     0.50)
     abs_elderly_speed = _f(sm, "abs_elderly_speed", 0.50)
 
@@ -273,7 +295,9 @@ def build_tunnel_context(params: dict) -> TunnelContext:
         parts.append(f" {_g(v)} ".encode("ascii"))
     for v in veh_lengths:                                                 # L45–L51
         parts.append(f" {_g(v)} ".encode("ascii"))
-    parts.append(_BYTES_L52_TO_L59)                                       # L52–L59
+    for v in sim_occ:                                                     # L52–L58: occupants/veh
+        parts.append(f" {_g(v)} ".encode("ascii"))
+    parts.append(b" 1 ")                                                  # L59
     static_lines_2_to_59 = b"\n".join(parts)
 
     # ── n_occ formula intermediates ──
@@ -645,3 +669,4 @@ def write_evc_file(evc_path: Path, params: dict, chid: str,
         l74_override=l74_override,
         mdb_indices=mdb_indices,
     )
+
