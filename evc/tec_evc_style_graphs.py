@@ -236,11 +236,11 @@ def _load_fdb(fdb_path: Path):
     try:
         # Works when evc/ is on sys.path (qra_main_app adds it) or when
         # running the CLI from inside the evc/ directory.
-        from evc_engine import FDBData
+        from qra_system_v2.evc.evc_engine_old import FDBData
     except ImportError:
         try:
             # Works when running from the repo root with evc/ as a package.
-            from evc.evc_engine import FDBData
+            from qra_system_v2.evc.evc_engine_old import FDBData
         except ImportError:
             # Last resort: import evc_engine.py from this file's own folder.
             import importlib.util

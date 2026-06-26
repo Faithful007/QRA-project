@@ -53,7 +53,7 @@ class _EVCWriterMixin:
     _evc_tctx_cache: dict | None = None  # {id(params): TunnelContext}
     _evc_sctx_cache: dict | None = None  # {(id(params), chid): ScenarioContext}
 
-    def _evc_invalidate_cache(self) -> None:
+    def _evc_invalidate_cache(+self) -> None:
         """Clear cached EVC contexts. Call when params dict is rebuilt
         (typically after _collect_evc_params())."""
         self._evc_tctx_cache = None

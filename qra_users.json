@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "users": {
+    "admin": {
+      "role": "admin",
+      "salt": "9983309947954987c7d865e4849e8ebe",
+      "hash": "b455a949473c51a235fdc0a1292fe3b3a0ff4f27d9ae03fb8e2db98e71b0e912",
+      "iterations": 200000,
+      "created": "2026-06-25T11:14:22"
+    }
+  }
+}

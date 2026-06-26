@@ -15,7 +15,7 @@ Usage:
 e.g. python diag_occupants.py Gopo_Upper_020CFV0P1.EVC 331
 """
 import sys, numpy as np
-from evc_engine import EVCEngine, EVCParams, build_vb_vehicle_queue, vb_cint
+from qra_system_v2.evc.evc_engine_old import EVCEngine, EVCParams, build_vb_vehicle_queue, vb_cint
 
 def main(evc_path, vb_target=None):
     eng = EVCEngine(evc_path)              # use_vb_queue defaults True
