@@ -764,7 +764,7 @@ class QRAMainWindow(QMainWindow):
         """Initialize user interface"""
         from datetime import datetime
         build_date = datetime.now().strftime("%-d %B %Y") if os.name != 'nt' else datetime.now().strftime("%#d %B %Y")
-        self.setWindowTitle(f"Quantitative Risk Assessment System v2.9.0  |  Compiled: {build_date}")
+        self.setWindowTitle(f"BEC: Quantitative Risk Assessment System   |  Compiled: {build_date}")
         self.setGeometry(50, 50, 1600, 1000)
         
         # Central widget

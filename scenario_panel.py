@@ -24,7 +24,7 @@ from collections import Counter
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QRadioButton,
     QButtonGroup, QTableWidget, QTableWidgetItem, QPushButton, QScrollArea,
-    QHeaderView, QSizePolicy, QAbstractScrollArea, QCheckBox,
+    QHeaderView, QSizePolicy, QAbstractScrollArea, QCheckBox, QDoubleSpinBox,
 )
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QFont
@@ -872,6 +872,393 @@ class ControlTable(QWidget):
 
 
 # ====================================================================
+#  Vehicles by Fire Intensity
+# ====================================================================
+class VehiclesByFireIntensityPanel(QGroupBox):
+    def __init__(self, scenario_panel, parent=None):
+        super().__init__("Vehicles by Fire Intensity", parent)
+        self._scenario_panel = scenario_panel
+        self._loading = False
+        self._mws = []
+        self._spread_inputs = []
+        self._bound_traffic_perf = None
+        self.setStyleSheet("QGroupBox{font-weight:bold;}")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 8)
+        root.setSpacing(6)
+
+        haz_row = QHBoxLayout()
+        haz_row.setSpacing(8)
+
+        self.hazmat_ratio = QDoubleSpinBox()
+        self.hazmat_ratio.setRange(0.0, 100.0)
+        self.hazmat_ratio.setDecimals(1)
+        self.hazmat_ratio.setSingleStep(0.5)
+        self.hazmat_ratio.setSuffix(" %")
+        self.hazmat_ratio.setValue(5.0)
+        self.hazmat_ratio.setToolTip("Ratio of hazardous materials transport vehicles")
+
+        haz_row.addWidget(QLabel("Ratio of hazardous materials transport vehicles"))
+        haz_row.addWidget(self.hazmat_ratio)
+        haz_row.addStretch(1)
+        root.addLayout(haz_row)
+
+        self.spread_header = QLabel("Probability of fire spread in fire accidents")
+        self.spread_header.setStyleSheet("font-weight:bold;color:#1a252f;")
+        root.addWidget(self.spread_header)
+
+        self.spread_row = QWidget()
+        self.spread_row_l = QHBoxLayout(self.spread_row)
+        self.spread_row_l.setContentsMargins(0, 0, 0, 0)
+        self.spread_row_l.setSpacing(6)
+        root.addWidget(self.spread_row)
+
+        self.note = QLabel(
+            "Vehicle Count is sourced from Traffic Performance. Columns follow sheet-style formulas: VK.000MW = Count x 365 x TL, VKM(2) and VKM(3) from fire-size spread probabilities.")
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color:#5a6b7d;font-size:11px;")
+        root.addWidget(self.note)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setHorizontalHeaderLabels([
+            "Vehicle",
+            "Fire Size",
+            "Vehicle Count",
+            "VK.000MW",
+            "VKM(2)",
+            "VKM(3)",
+        ])
+        self.table.setStyleSheet(
+            "QTableWidget{background:#ffffff;color:#1a252f;gridline-color:#cdd9e6;"
+            "font-size:11px;border:1px solid #95a5a6;}"
+            "QHeaderView::section{background:#2c4a63;color:white;font-weight:bold;"
+            "padding:3px 6px;border:1px solid #1f3a52;}")
+        root.addWidget(self.table)
+
+        self.hazmat_ratio.valueChanged.connect(self.refresh)
+
+    @staticmethod
+    def _fmt(v, digits=2):
+        if v is None:
+            return "-"
+        try:
+            val = float(v)
+        except (TypeError, ValueError):
+            return str(v)
+        if abs(val) >= 1e6 or (0 < abs(val) < 1e-3):
+            return "%.2e" % val
+        if digits == 0:
+            return format(val, ",.0f")
+        return format(val, f",.{digits}f")
+
+    @staticmethod
+    def _mw_label(mw):
+        try:
+            val = float(mw)
+        except (TypeError, ValueError):
+            return str(mw)
+        if val.is_integer():
+            return f"{int(val)} MW"
+        return f"{val:g} MW"
+
+    def _main_window(self):
+        w = self
+        while w is not None and w.parentWidget() is not None:
+            w = w.parentWidget()
+        return w
+
+    @staticmethod
+    def _num_item(tbl, r, c):
+        try:
+            it = tbl.item(r, c)
+            txt = (it.text() if it else "0").replace(",", "").strip()
+            return float(txt or 0.0)
+        except Exception:
+            return 0.0
+
+    def _bind_traffic_perf_signal(self):
+        mw = self._main_window()
+        tbl = getattr(mw, "traffic_perf_table", None) if mw is not None else None
+        if tbl is None or tbl is self._bound_traffic_perf:
+            return
+        try:
+            tbl.itemChanged.connect(lambda *_: self.refresh())
+            self._bound_traffic_perf = tbl
+        except Exception:
+            pass
+
+    def _traffic_perf_counts(self):
+        """Counts from Traffic Performance table rows:
+        0=PC, 1=Bus+Truck(small), 2=Truck(med/large), 3=Special."""
+        self._bind_traffic_perf_signal()
+        mw = self._main_window()
+        tbl = getattr(mw, "traffic_perf_table", None) if mw is not None else None
+        if tbl is not None and tbl.rowCount() >= 4 and tbl.columnCount() >= 2:
+            return {
+                "pc": self._num_item(tbl, 0, 1),
+                "bs": self._num_item(tbl, 1, 1),
+                "ml": self._num_item(tbl, 2, 1),
+                "sp": self._num_item(tbl, 3, 1),
+            }
+
+        # Fallback when launcher table is unavailable.
+        base = self._scenario_panel._baseline or []
+        out = {"pc": 0.0, "bs": 0.0, "ml": 0.0, "sp": 0.0}
+        for v in base:
+            c = v.get("base_caseyr")
+            if c is None:
+                c = v.get("caseyr")
+            if c is None:
+                c = 0.0
+            k = classify_vehicle(v.get("name") or "")
+            if k == 0:
+                out["pc"] += float(c)
+            elif k == 1:
+                out["bs"] += float(c)
+            elif k == 2:
+                out["ml"] += float(c)
+            elif k == 3:
+                out["sp"] += float(c)
+        return out
+
+    def _tunnel_length_km(self):
+        mw = self._main_window()
+        for attr in ("tbi_length", "evc_tunnel_length"):
+            w = getattr(mw, attr, None) if mw is not None else None
+            if w is None:
+                continue
+            try:
+                txt = (w.text() or "").strip()
+                if txt:
+                    return float(txt) / 1000.0
+            except Exception:
+                continue
+        return 0.0
+
+    def _ensure_spread_inputs(self, mws):
+        old = [mw for mw, _ in self._spread_inputs]
+        if old == list(mws):
+            return
+        while self.spread_row_l.count():
+            it = self.spread_row_l.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._spread_inputs = []
+        for i, mw in enumerate(mws):
+            self.spread_row_l.addWidget(QLabel(self._mw_label(mw)))
+            sp = QDoubleSpinBox()
+            sp.setRange(0.0, 100.0)
+            sp.setDecimals(1)
+            sp.setSingleStep(0.5)
+            sp.setSuffix(" %")
+            # Spreadsheet cue: first fire-size has larger baseline probability.
+            sp.setValue(40.0 if i == 0 else 15.0)
+            sp.valueChanged.connect(self.refresh)
+            self.spread_row_l.addWidget(sp)
+            self._spread_inputs.append((mw, sp))
+        self.spread_row_l.addStretch(1)
+
+    def _spread_prob_map(self):
+        out = {}
+        for mw, sp in self._spread_inputs:
+            out[mw] = max(0.0, min(1.0, sp.value() / 100.0))
+        return out
+
+    @staticmethod
+    def _counts_by_fire_size(mws, counts, hazmat_ratio):
+        out = {mw: 0.0 for mw in mws}
+        if not mws:
+            return out
+        pc = counts["pc"]
+        bs = counts["bs"]
+        ml = counts["ml"]
+        sp = counts["sp"]
+
+        out[mws[0]] += pc
+        if len(mws) >= 2:
+            out[mws[1]] += bs
+
+        if len(mws) >= 3:
+            mid_idx = len(mws) - 2
+            out[mws[mid_idx]] += ml
+            out[mws[mid_idx]] += sp * (1.0 - hazmat_ratio)
+            out[mws[-1]] += sp * hazmat_ratio
+        elif len(mws) == 2:
+            out[mws[1]] += ml + sp
+        else:
+            out[mws[0]] += bs + ml + sp
+        return out
+
+    @staticmethod
+    def _vkm_from_vk(vk_map, prob_map, mws):
+        vkm2 = {mw: 0.0 for mw in mws}
+        vkm3 = {mw: 0.0 for mw in mws}
+        carry = 0.0
+        for mw in reversed(mws):
+            vk = vk_map.get(mw, 0.0)
+            p = prob_map.get(mw, 0.0)
+            vkm2[mw] = vk * p + carry
+            vkm3[mw] = vk * (1.0 - p)
+            carry = vk * (1.0 - p)
+        return vkm2, vkm3
+
+    @staticmethod
+    def _mw_from_size_text(size_text):
+        if not size_text:
+            return None
+        m = re.search(r"(\d+(?:\.\d+)?)", str(size_text))
+        if not m:
+            return None
+        try:
+            val = float(m.group(1))
+            return int(val) if val.is_integer() else val
+        except Exception:
+            return None
+
+    def _vehicles_by_fire_size(self, mws):
+        out = {float(mw): [] for mw in mws}
+        owner = self._scenario_panel
+        enabled = getattr(owner.diagram, "_enabled", {}) if hasattr(owner, "diagram") else {}
+        for v in owner._baseline or []:
+            vname = _en(v.get("name") or "")
+            if not vname:
+                continue
+            if enabled and not enabled.get(vname, True):
+                continue
+            seen = set()
+            for b in v.get("branches", []):
+                mw = self._mw_from_size_text(b.get("size"))
+                if mw is None:
+                    continue
+                mw = float(mw)
+                if mw in out and mw not in seen:
+                    out[mw].append(vname)
+                    seen.add(mw)
+        return out
+
+    def refresh(self):
+        if self._loading:
+            return
+        owner = self._scenario_panel
+        self._mws = owner.selected_hrr_mw() or owner.all_hrr_mw() or []
+        self._mws = sorted(float(mw) for mw in self._mws)
+        self._ensure_spread_inputs(self._mws)
+
+        counts = self._traffic_perf_counts()
+        hazmat_ratio = max(0.0, min(1.0, self.hazmat_ratio.value() / 100.0))
+        count_by_size = self._counts_by_fire_size(self._mws, counts, hazmat_ratio)
+        vehicle_by_size = self._vehicles_by_fire_size(self._mws)
+        tl_km = self._tunnel_length_km()
+        vk = {mw: count_by_size.get(mw, 0.0) * 365.0 * tl_km for mw in self._mws}
+        probs = self._spread_prob_map()
+        vkm2, vkm3 = self._vkm_from_vk(vk, probs, self._mws)
+
+        self._loading = True
+        try:
+            self.table.clear()
+            self.table.setColumnCount(6)
+            self.table.setHorizontalHeaderLabels([
+                "Vehicle", "Fire Size", "Vehicle Count", "VK.000MW", "VKM(2)", "VKM(3)"
+            ])
+
+            if not self._mws:
+                self.table.setRowCount(1)
+                self._set_item(0, 0, "No scenario data", align=Qt.AlignLeft | Qt.AlignVCenter)
+                for c in range(1, 6):
+                    self._set_item(0, c, "-", align=Qt.AlignCenter)
+            else:
+                self.table.setRowCount(len(self._mws) + 2)
+                total_count = 0.0
+                total_vk = 0.0
+                total_vkm2 = 0.0
+                total_vkm3 = 0.0
+                for r, mw in enumerate(self._mws):
+                    cnt = count_by_size.get(mw, 0.0)
+                    vk_val = vk.get(mw, 0.0)
+                    v2 = vkm2.get(mw, 0.0)
+                    v3 = vkm3.get(mw, 0.0)
+                    total_count += cnt
+                    total_vk += vk_val
+                    total_vkm2 += v2
+                    total_vkm3 += v3
+
+                    names = vehicle_by_size.get(mw, [])
+                    veh_text = ", ".join(names) if names else "-"
+                    self._set_item(r, 0, veh_text, align=Qt.AlignLeft | Qt.AlignVCenter)
+                    self._set_item(r, 1, self._mw_label(mw), align=Qt.AlignLeft | Qt.AlignVCenter)
+                    self._set_item(r, 2, self._fmt(cnt, 0), align=Qt.AlignCenter)
+                    self._set_item(r, 3, self._fmt(vk_val, 2), align=Qt.AlignCenter)
+                    self._set_item(r, 4, self._fmt(v2, 2), align=Qt.AlignCenter)
+                    self._set_item(r, 5, self._fmt(v3, 2), align=Qt.AlignCenter)
+
+                heavy_row = len(self._mws)
+                heavy_mws = self._mws[1:] if len(self._mws) > 1 else self._mws
+                heavy_count = sum(count_by_size.get(mw, 0.0) for mw in heavy_mws)
+                heavy_vk = sum(vk.get(mw, 0.0) for mw in heavy_mws)
+                heavy_vkm2 = sum(vkm2.get(mw, 0.0) for mw in heavy_mws)
+                heavy_vkm3 = sum(vkm3.get(mw, 0.0) for mw in heavy_mws)
+                self._set_item(heavy_row, 0, "Heavy Vehicle Total", align=Qt.AlignLeft | Qt.AlignVCenter, bold=True)
+                self._set_item(heavy_row, 1, "-", align=Qt.AlignCenter, bold=True)
+                self._set_item(heavy_row, 2, self._fmt(heavy_count, 0), align=Qt.AlignCenter, bold=True)
+                self._set_item(heavy_row, 3, self._fmt(heavy_vk, 2), align=Qt.AlignCenter, bold=True)
+                self._set_item(heavy_row, 4, self._fmt(heavy_vkm2, 2), align=Qt.AlignCenter, bold=True)
+                self._set_item(heavy_row, 5, self._fmt(heavy_vkm3, 2), align=Qt.AlignCenter, bold=True)
+
+                total_row = heavy_row + 1
+                self._set_item(total_row, 0, "Total Veh-KM", align=Qt.AlignLeft | Qt.AlignVCenter, bold=True)
+                self._set_item(total_row, 1, "-", align=Qt.AlignCenter, bold=True)
+                self._set_item(total_row, 2, self._fmt(total_count, 0), align=Qt.AlignCenter, bold=True)
+                self._set_item(total_row, 3, self._fmt(total_vk, 2), align=Qt.AlignCenter, bold=True)
+                self._set_item(total_row, 4, self._fmt(total_vkm2, 2), align=Qt.AlignCenter, bold=True)
+                self._set_item(total_row, 5, self._fmt(total_vkm3, 2), align=Qt.AlignCenter, bold=True)
+
+            self.table.resizeColumnsToContents()
+            self.table.resizeRowsToContents()
+            self._fit_width()
+            self._fit_height()
+        finally:
+            self._loading = False
+
+    def _set_item(self, row, col, text, align=Qt.AlignCenter, bold=False):
+        it = self.table.item(row, col)
+        if it is None:
+            it = QTableWidgetItem()
+            self.table.setItem(row, col, it)
+        it.setText(text)
+        it.setTextAlignment(align)
+        it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        if bold:
+            it.setForeground(QColor("#1a252f"))
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            it.setBackground(QColor("#eef3f7"))
+        else:
+            it.setForeground(QColor("#1a252f"))
+            it.setBackground(QColor("#ffffff"))
+
+    def _fit_width(self):
+        w = self.table.frameWidth() * 2 + self.table.verticalHeader().width()
+        for c in range(self.table.columnCount()):
+            w += self.table.columnWidth(c)
+        self.table.setFixedWidth(w + 4)
+
+    def _fit_height(self):
+        h = self.table.horizontalHeader().height() + self.table.frameWidth() * 2
+        for r in range(self.table.rowCount()):
+            h += self.table.rowHeight(r)
+        self.table.setFixedHeight(h + 2)
+
+
+# ====================================================================
 #  Scenario panel
 # ====================================================================
 class ScenarioPanel(QWidget):
@@ -911,6 +1298,8 @@ class ScenarioPanel(QWidget):
         self.control = ControlTable()
         self.control.valuesChanged.connect(self._apply_control)
         cv.addWidget(self.control, 0, Qt.AlignLeft | Qt.AlignTop)
+        self.fire_intensity = VehiclesByFireIntensityPanel(self)
+        cv.addWidget(self.fire_intensity, 0, Qt.AlignLeft | Qt.AlignTop)
         gctrl.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
         left.addWidget(gctrl)
 
@@ -936,6 +1325,7 @@ class ScenarioPanel(QWidget):
         dv = QVBoxLayout(gdia)
         self.diagram = ScenarioDiagram()
         self.diagram.vehicleToggled.connect(self.scenarioSelected.emit)
+        self.diagram.vehicleToggled.connect(self._refresh_fire_intensity_panel)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.diagram)
@@ -948,6 +1338,10 @@ class ScenarioPanel(QWidget):
 
         if self._sheets:
             self._on_select(0)
+
+    def _refresh_fire_intensity_panel(self):
+        if hasattr(self, "fire_intensity") and self.fire_intensity is not None:
+            self.fire_intensity.refresh()
 
     def mount_traffic_ventilation(self, group_widget):
         """Place the reparented 'Traffic Ventilation' group (originally the
@@ -1035,6 +1429,7 @@ class ScenarioPanel(QWidget):
         rows = self._build_control_rows(self._baseline)
         self.control.load(rows)
         self._apply_control()
+        self._refresh_fire_intensity_panel()
         self.scenarioSelected.emit()
 
     def selected_hrr_mw(self):
@@ -1094,3 +1489,4 @@ class ScenarioPanel(QWidget):
         else:
             note = "No event-tree data could be parsed from this sheet."
         self.diagram.set_data(getattr(self, "_sheet_name", ""), vehicles, note)
+        self._refresh_fire_intensity_panel()
